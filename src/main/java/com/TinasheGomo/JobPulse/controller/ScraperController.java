@@ -19,9 +19,9 @@ public class ScraperController {
 
     @PostMapping("/run")
     public ResponseEntity<Map<String, Object>> run() {
-        scraperJob.execute();
+        scraperJob.executeAsync();
         return ResponseEntity.ok(Map.of(
-                "status", "ok",
+                "status", "started",
                 "timestamp", LocalDateTime.now().toString()
         ));
     }

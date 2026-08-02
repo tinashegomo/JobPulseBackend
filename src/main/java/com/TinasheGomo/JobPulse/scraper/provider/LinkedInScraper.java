@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 
 @Slf4j
 @Service
-public class LinkedInScraper {
+public class LinkedInScraper implements JobScraper {
 
     private static final String USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
@@ -63,12 +63,23 @@ public class LinkedInScraper {
 
     private int rateLimitCount = 0;
 
-    public List<ScrapedJob> scrape(String searchUrl) {
-        log.info("[LinkedIn] Scraping URL: {}", searchUrl);
+    @Override
+    public String getSource() {
+        return "LINKEDIN";
+    }
+
+    @Override
+    public List<ScrapedJob> scrape(String keywords, String location) {
+        String searchUrl = buildSearchUrl(keywords, location);
+        log.info("[LinkedIn] 🌐 Scraping URL: {}", searchUrl);
+        long start = System.currentTimeMillis();
         List<ScrapedJob> jobs = new ArrayList<>();
+        int pagesVisited = 0;
+        int duplicatesSkipped = 0;
 
         try {
             String html = fetchSearchPage(searchUrl);
+            pagesVisited++;
             List<Map<String, String>> rawCards = parseJobCards(html);
             log.info("[LinkedIn] Found {} raw job cards in HTML", rawCards.size());
 
@@ -123,7 +134,21 @@ public class LinkedInScraper {
             log.error("[LinkedIn] Scrape failed for {}: {}", searchUrl, e.getMessage());
         }
 
+        long elapsed = (System.currentTimeMillis() - start) / 1000;
+        log.info("[LinkedIn] ✅ Done — {} jobs found, {} pages visited, {} duplicates skipped ({}s elapsed)",
+                jobs.size(), pagesVisited, duplicatesSkipped, elapsed);
         return jobs;
+    }
+
+    private String buildSearchUrl(String keywords, String location) {
+        StringBuilder url = new StringBuilder("https://www.linkedin.com/jobs/search/?");
+        if (keywords != null && !keywords.isBlank()) {
+            url.append("keywords=").append(keywords.replace(" ", "%20"));
+        }
+        if (location != null && !location.isBlank()) {
+            url.append("&location=").append(location.replace(" ", "%20"));
+        }
+        return url.toString();
     }
 
     private String fetchSearchPage(String url) throws IOException, InterruptedException {

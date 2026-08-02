@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 
 @Slf4j
 @Service
-public class ApplyNowScraper {
+public class ApplyNowScraper implements JobScraper {
 
     private static final String APPLY_NOW_URL = "https://applynow.co.zw/category/zimbabwe/";
     private static final String USER_AGENT =
@@ -48,7 +48,13 @@ public class ApplyNowScraper {
             .connectTimeout(Duration.ofSeconds(60))
             .build();
 
-    public List<ScrapedJob> scrape() {
+    @Override
+    public String getSource() {
+        return "APPLYNOW";
+    }
+
+    @Override
+    public List<ScrapedJob> scrape(String keywords, String location) {
         log.info("[ApplyNow] 🌐 Scraping Zimbabwe job listings from {}", APPLY_NOW_URL);
         List<ScrapedJob> jobs = new ArrayList<>();
 

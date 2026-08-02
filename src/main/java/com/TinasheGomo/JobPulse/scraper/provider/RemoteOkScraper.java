@@ -17,14 +17,20 @@ import java.util.List;
 
 @Slf4j
 @Service
-public class RemoteOkScraper {
+public class RemoteOkScraper implements JobScraper {
 
     private static final String REMOTE_OK_API = "https://remoteok.com/api";
     private static final String USER_AGENT = "Mozilla/5.0 (compatible; JobPulseBot/1.0)";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public List<ScrapedJob> scrape() {
+    @Override
+    public String getSource() {
+        return "REMOTEOK";
+    }
+
+    @Override
+    public List<ScrapedJob> scrape(String keywords, String location) {
         log.info("[RemoteOK] 🌐 Fetching job feed from {}", REMOTE_OK_API);
         List<ScrapedJob> jobs = new ArrayList<>();
 
@@ -59,7 +65,7 @@ public class RemoteOkScraper {
                 String externalJobId = jobNode.has("id") ? String.valueOf(jobNode.get("id").asLong()) : "";
                 String title = jobNode.has("position") ? jobNode.get("position").asText("") : "";
                 String company = jobNode.has("company") ? jobNode.get("company").asText("") : "";
-                String location = jobNode.has("location") ? jobNode.get("location").asText("Remote") : "Remote";
+                String jobLocation = jobNode.has("location") ? jobNode.get("location").asText("Remote") : "Remote";
                 String jobUrl = jobNode.has("url") ? jobNode.get("url").asText("") : "";
                 if (jobUrl.isEmpty() && !externalJobId.isEmpty()) {
                     jobUrl = "https://remoteok.com/remote-jobs/" + externalJobId;
@@ -91,7 +97,7 @@ public class RemoteOkScraper {
                             .externalJobId(externalJobId)
                             .title(title)
                             .company(company)
-                            .location(location)
+                            .location(jobLocation)
                             .jobUrl(jobUrl)
                             .postedText(postedText)
                             .postedAt(postedAt)

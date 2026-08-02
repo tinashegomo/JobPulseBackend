@@ -6,9 +6,7 @@ import com.TinasheGomo.JobPulse.dto.resumeprofile.ResumeProfileResponse;
 import com.TinasheGomo.JobPulse.repository.AlertRepository;
 import com.TinasheGomo.JobPulse.scraper.ai.JobExtractor;
 import com.TinasheGomo.JobPulse.scraper.ai.SemanticChecker;
-import com.TinasheGomo.JobPulse.scraper.provider.ApplyNowScraper;
-import com.TinasheGomo.JobPulse.scraper.provider.LinkedInScraper;
-import com.TinasheGomo.JobPulse.scraper.provider.RemoteOkScraper;
+import com.TinasheGomo.JobPulse.scraper.provider.JobScraper;
 import com.TinasheGomo.JobPulse.scraper.provider.ScrapedJob;
 import com.TinasheGomo.JobPulse.service.JobService;
 import com.TinasheGomo.JobPulse.service.ResumeProfileService;
@@ -36,9 +34,7 @@ public class ScraperOrchestrator {
     private final JobService jobService;
     private final UserJobService userJobService;
     private final ResumeProfileService resumeProfileService;
-    private final LinkedInScraper linkedInScraper;
-    private final RemoteOkScraper remoteOkScraper;
-    private final ApplyNowScraper applyNowScraper;
+    private final List<JobScraper> scrapers;
     private final JobExtractor jobExtractor;
     private final SemanticChecker semanticChecker;
     private final NotificationService notificationService;
@@ -49,7 +45,11 @@ public class ScraperOrchestrator {
     private record CacheEntry(String status, long timestamp) {}
 
     public void run() {
-        log.info("Fetching active alerts from database...");
+        log.info("═══════════════════════════════════════════════════════");
+        log.info("🚀 SCRAPER RUN STARTED — {} scrapers registered", scrapers.size());
+        log.info("   Registered sources: {}", scrapers.stream().map(JobScraper::getSource).toList());
+        log.info("═══════════════════════════════════════════════════════");
+
         jobCache.clear();
         notifiedCache.clear();
 
@@ -65,36 +65,38 @@ public class ScraperOrchestrator {
             return;
         }
 
-        // LinkedIn
-        long linkedInStart = System.currentTimeMillis();
-        log.info("───────────────────────────────────────────────────");
-        log.info("📡 LINKEDIN — scraping {} alerts", alerts.size());
-        processLinkedIn(alerts);
-        long linkedInDuration = (System.currentTimeMillis() - linkedInStart) / 1000;
-        log.info("📡 LINKEDIN — done ({}s)", linkedInDuration);
+        int totalSourcesProcessed = 0;
+        int totalSourcesFailed = 0;
 
-        // RemoteOK
-        long remoteOkStart = System.currentTimeMillis();
-        log.info("───────────────────────────────────────────────────");
-        log.info("📡 REMOTEOK — fetching global feed");
-        processRemoteOk(alerts);
-        long remoteOkDuration = (System.currentTimeMillis() - remoteOkStart) / 1000;
-        log.info("📡 REMOTEOK — done ({}s)", remoteOkDuration);
+        for (JobScraper scraper : scrapers) {
+            String source = scraper.getSource();
+            long sourceStart = System.currentTimeMillis();
 
-        // ApplyNow
-        long applyNowStart = System.currentTimeMillis();
-        log.info("───────────────────────────────────────────────────");
-        log.info("📡 APPLYNOW — fetching Zimbabwe listings");
-        processApplyNow(alerts);
-        long applyNowDuration = (System.currentTimeMillis() - applyNowStart) / 1000;
-        log.info("📡 APPLYNOW — done ({}s)", applyNowDuration);
+            log.info("───────────────────────────────────────────────────");
+            log.info("📡 {} — scraping {} alerts", source, alerts.size());
 
-        log.info("───────────────────────────────────────────────────");
-        log.info("📊 SUMMARY: {} jobs in cache, {} users notified",
-                jobCache.size(), notifiedCache.size());
+            try {
+                processScraper(scraper, alerts);
+                long duration = (System.currentTimeMillis() - sourceStart) / 1000;
+                log.info("📡 {} — done ({}s)", source, duration);
+                totalSourcesProcessed++;
+            } catch (Exception e) {
+                long duration = (System.currentTimeMillis() - sourceStart) / 1000;
+                log.error("📡 {} — FAILED after ({}s): {}", source, duration, e.getMessage());
+                totalSourcesFailed++;
+            }
+        }
+
+        log.info("═══════════════════════════════════════════════════════");
+        log.info("📊 RUN COMPLETE: {}/{} sources succeeded, {} sources failed",
+                totalSourcesProcessed, scrapers.size(), totalSourcesFailed);
+        log.info("   Total jobs in cache: {}", jobCache.size());
+        log.info("   Total users notified: {}", notifiedCache.size());
+        log.info("═══════════════════════════════════════════════════════");
     }
 
-    private void processLinkedIn(List<Alert> alerts) {
+    private void processScraper(JobScraper scraper, List<Alert> alerts) {
+        String source = scraper.getSource();
         int totalFound = 0;
         int totalRecent = 0;
         int totalSaved = 0;
@@ -104,22 +106,16 @@ public class ScraperOrchestrator {
             try {
                 if (i > 0) {
                     long delay = 3000 + (long) (Math.random() * 5000);
-                    log.info("[LinkedIn] Rate-limit delay {}ms before next alert", delay);
+                    log.info("[{}] Rate-limit delay {}ms before next alert", source, delay);
                     sleep(delay);
                 }
 
-                log.info("[LinkedIn] ({}/{}) Scraping for keyword='{}', location='{}'",
-                        i + 1, alerts.size(), alert.getKeywords(), alert.getLocation());
+                log.info("[{}] ({}/{}) Scraping for keyword='{}', location='{}'",
+                        source, i + 1, alerts.size(), alert.getKeywords(), alert.getLocation());
 
-                String searchUrl = alert.getSearchUrl();
-                if (searchUrl == null || searchUrl.isBlank()) {
-                    searchUrl = buildLinkedInSearchUrl(alert);
-                }
-                log.info("[LinkedIn] URL: {}", searchUrl);
-
-                List<ScrapedJob> rawJobs = linkedInScraper.scrape(searchUrl);
+                List<ScrapedJob> rawJobs = scraper.scrape(alert.getKeywords(), alert.getLocation());
                 totalFound += rawJobs.size();
-                log.info("[LinkedIn] Found {} raw jobs for '{}'", rawJobs.size(), alert.getKeywords());
+                log.info("[{}] Found {} raw jobs for '{}'", source, rawJobs.size(), alert.getKeywords());
 
                 List<ScrapedJob> recentJobs = rawJobs.stream()
                         .filter(job -> {
@@ -130,92 +126,19 @@ public class ScraperOrchestrator {
                         .toList();
                 totalRecent += recentJobs.size();
 
-                log.info("[LinkedIn] {} of {} jobs within {}h window",
-                        recentJobs.size(), rawJobs.size(), MAX_JOB_AGE_HOURS);
+                log.info("[{}] {} of {} jobs within {}h window",
+                        source, recentJobs.size(), rawJobs.size(), MAX_JOB_AGE_HOURS);
 
                 for (ScrapedJob job : recentJobs) {
-                    boolean saved = processJobForAlert(job, "LINKEDIN", alert);
+                    boolean saved = processJobForAlert(job, source, alert);
                     if (saved) totalSaved++;
                 }
             } catch (Exception e) {
-                log.error("[LinkedIn] Error processing alert '{}': {}", alert.getKeywords(), e.getMessage());
+                log.error("[{}] Error processing alert '{}': {}", source, alert.getKeywords(), e.getMessage());
             }
         }
 
-        log.info("[LinkedIn] TOTAL: {} found, {} recent, {} saved", totalFound, totalRecent, totalSaved);
-    }
-
-    private void processRemoteOk(List<Alert> alerts) {
-        try {
-            List<ScrapedJob> remoteOkJobs = remoteOkScraper.scrape();
-            log.info("[RemoteOK] Fetched {} total listings from API", remoteOkJobs.size());
-
-            int totalMatches = 0;
-            int totalSaved = 0;
-
-            for (Alert alert : alerts) {
-                List<ScrapedJob> matches = remoteOkJobs.stream()
-                        .filter(job -> matchesAlertKeyword(job, alert))
-                        .filter(job -> {
-                            if (job.getPostedAt() == null) return true;
-                            long hours = Duration.between(job.getPostedAt(), LocalDateTime.now()).toHours();
-                            return hours <= MAX_JOB_AGE_HOURS;
-                        })
-                        .toList();
-                totalMatches += matches.size();
-
-                log.info("[RemoteOK] Alert '{}' — {} matches within {}h",
-                        alert.getKeywords(), matches.size(), MAX_JOB_AGE_HOURS);
-
-                for (ScrapedJob job : matches) {
-                    boolean saved = processJobForAlert(job, "REMOTEOK", alert);
-                    if (saved) totalSaved++;
-                }
-            }
-
-            log.info("[RemoteOK] TOTAL: {} matches across {} alerts, {} saved", totalMatches, alerts.size(), totalSaved);
-        } catch (Exception e) {
-            log.error("[RemoteOK] Error processing feed: {}", e.getMessage());
-        }
-    }
-
-    private void processApplyNow(List<Alert> alerts) {
-        try {
-            List<ScrapedJob> applyNowJobs = applyNowScraper.scrape();
-            log.info("[ApplyNow] Fetched {} total listings from site", applyNowJobs.size());
-
-            List<Alert> zimbabweAlerts = alerts.stream()
-                    .filter(a -> a.getLocation() != null && a.getLocation().toLowerCase().contains("zimbabwe"))
-                    .toList();
-            log.info("[ApplyNow] {} alerts match Zimbabwe location filter", zimbabweAlerts.size());
-
-            int totalMatches = 0;
-            int totalSaved = 0;
-
-            for (Alert alert : zimbabweAlerts) {
-                List<ScrapedJob> matches = applyNowJobs.stream()
-                        .filter(job -> matchesAlertKeyword(job, alert))
-                        .filter(job -> {
-                            if (job.getPostedAt() == null) return true;
-                            long hours = Duration.between(job.getPostedAt(), LocalDateTime.now()).toHours();
-                            return hours <= MAX_JOB_AGE_HOURS;
-                        })
-                        .toList();
-                totalMatches += matches.size();
-
-                log.info("[ApplyNow] Alert '{}' — {} matches within {}h",
-                        alert.getKeywords(), matches.size(), MAX_JOB_AGE_HOURS);
-
-                for (ScrapedJob job : matches) {
-                    boolean saved = processJobForAlert(job, "APPLYNOW", alert);
-                    if (saved) totalSaved++;
-                }
-            }
-
-            log.info("[ApplyNow] TOTAL: {} matches across {} alerts, {} saved", totalMatches, zimbabweAlerts.size(), totalSaved);
-        } catch (Exception e) {
-            log.error("[ApplyNow] Error processing feed: {}", e.getMessage());
-        }
+        log.info("[{}] 📊 SUMMARY: {} found, {} recent, {} saved", source, totalFound, totalRecent, totalSaved);
     }
 
     private boolean processJobForAlert(ScrapedJob job, String source, Alert alert) {
@@ -228,21 +151,21 @@ public class ScraperOrchestrator {
             return false;
         }
 
-        // AI scoring for all sources
+        ScoreResult cachedScore = null;
         if (cached == null) {
             log.info("[{}] Scoring job: '{}' at '{}' for user {}...",
                     source, job.getTitle(), job.getCompany(), alert.getUser().getId());
 
-            var scoreResult = scoreJobFull(job, alert);
-            if (scoreResult != null && scoreResult.score() < AI_SCORE_THRESHOLD) {
+            cachedScore = scoreJobFull(job, alert);
+            if (cachedScore != null && cachedScore.score() < AI_SCORE_THRESHOLD) {
                 jobCache.put(jobKey, new CacheEntry("rejected", System.currentTimeMillis()));
                 log.info("[{}] ❌ REJECTED (score {}/100): {} at {} — {}",
-                        source, scoreResult.score(), job.getTitle(), job.getCompany(), scoreResult.reason());
+                        source, cachedScore.score(), job.getTitle(), job.getCompany(), cachedScore.reason());
                 return false;
             }
-            if (scoreResult != null) {
+            if (cachedScore != null) {
                 log.info("[{}] ✅ ACCEPTED (score {}/100): {} — {}",
-                        source, scoreResult.score(), job.getTitle(), scoreResult.reason());
+                        source, cachedScore.score(), job.getTitle(), cachedScore.reason());
             }
         }
 
@@ -268,11 +191,7 @@ public class ScraperOrchestrator {
 
         Map<String, CacheEntry> userNotified = notifiedCache.computeIfAbsent(userKey, k -> new ConcurrentHashMap<>());
         if (!userNotified.containsKey(jobKey)) {
-            Integer score = null;
-            var scoreResult = scoreJobFull(job, alert);
-            if (scoreResult != null) {
-                score = scoreResult.score();
-            }
+            Integer score = cachedScore != null ? cachedScore.score() : null;
 
             userJobService.saveUserJob(alert.getUser(), savedJob, score);
             log.info("[{}] 🔔 NOTIFIED user {} for '{}'", source, alert.getUser().getId(), job.getTitle());
@@ -393,19 +312,6 @@ public class ScraperOrchestrator {
 
         return words.stream().anyMatch(word ->
                 titleLower.contains(word) || descLower.contains(word) || tagsLower.stream().anyMatch(tag -> tag.contains(word)));
-    }
-
-    private String buildLinkedInSearchUrl(Alert alert) {
-        StringBuilder url = new StringBuilder("https://www.linkedin.com/jobs/search/?");
-
-        if (alert.getKeywords() != null && !alert.getKeywords().isBlank()) {
-            url.append("keywords=").append(alert.getKeywords().replace(" ", "%20"));
-        }
-        if (alert.getLocation() != null && !alert.getLocation().isBlank()) {
-            url.append("&location=").append(alert.getLocation().replace(" ", "%20"));
-        }
-
-        return url.toString();
     }
 
     private void sleep(long ms) {
