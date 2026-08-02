@@ -1,6 +1,5 @@
 package com.TinasheGomo.JobPulse.dto.resumeprofile;
 
-import jakarta.validation.constraints.NotBlank;
 import lombok.*;
 
 @Data
@@ -13,4 +12,6 @@ public class ResumeProfileRequest {
     private String level;
     private String workPreference;
     private String resumeText;
+    private String profile;
+    private String originalFileName;
 }

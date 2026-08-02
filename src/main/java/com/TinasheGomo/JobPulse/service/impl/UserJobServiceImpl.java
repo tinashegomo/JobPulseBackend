@@ -6,6 +6,7 @@ import com.TinasheGomo.JobPulse.entity.User;
 import com.TinasheGomo.JobPulse.entity.UserJob;
 import com.TinasheGomo.JobPulse.exception.exceptions.NotFoundException;
 import com.TinasheGomo.JobPulse.mapper.UserJobMapper;
+import com.TinasheGomo.JobPulse.repository.JobRepository;
 import com.TinasheGomo.JobPulse.repository.UserJobRepository;
 import com.TinasheGomo.JobPulse.service.UserJobService;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +21,7 @@ import java.util.UUID;
 public class UserJobServiceImpl implements UserJobService {
 
     private final UserJobRepository userJobRepository;
+    private final JobRepository jobRepository;
     private final UserJobMapper userJobMapper;
 
     @Override
@@ -78,5 +80,6 @@ public class UserJobServiceImpl implements UserJobService {
     @Transactional
     public void deleteAllByUser(User user) {
         userJobRepository.deleteAllByUser(user);
+        jobRepository.deleteOrphanedJobs();
     }
 }

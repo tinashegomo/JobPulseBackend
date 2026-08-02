@@ -34,6 +34,12 @@ public class ResumeProfile {
     @Column(name = "work_preference")
     private String workPreference;
 
+    @Column(columnDefinition = "TEXT")
+    private String profile;
+
+    @Column(name = "original_file_name")
+    private String originalFileName;
+
     @Column(name = "resume_text", columnDefinition = "TEXT")
     private String resumeText;
 

@@ -16,6 +16,8 @@ public class ResumeProfileResponse {
     private String level;
     private String workPreference;
     private String resumeText;
+    private Object profile;
+    private String originalFileName;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

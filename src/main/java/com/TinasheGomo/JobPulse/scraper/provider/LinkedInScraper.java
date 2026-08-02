@@ -242,10 +242,25 @@ public class LinkedInScraper {
 
     private String stripTags(String html) {
         if (html == null) return "";
-        return html.replaceAll("<[^>]+>", "").replaceAll("&amp;", "&")
+        String result = html;
+        // Preserve structure before stripping
+        result = result.replaceAll("<li[^>]*>", "\n• ");
+        result = result.replaceAll("<br\\s*/?>", "\n");
+        result = result.replaceAll("</?p[^>]*>", "\n");
+        result = result.replaceAll("</?div[^>]*>", "\n");
+        result = result.replaceAll("</?h[1-6][^>]*>", "\n");
+        result = result.replaceAll("</?ul[^>]*>", "\n");
+        result = result.replaceAll("</?ol[^>]*>", "\n");
+        // Strip remaining tags
+        result = result.replaceAll("<[^>]+>", "");
+        // Decode HTML entities
+        result = result.replaceAll("&amp;", "&")
                 .replaceAll("&lt;", "<").replaceAll("&gt;", ">")
                 .replaceAll("&quot;", "\"").replaceAll("&#39;", "'")
-                .replaceAll("&nbsp;", " ").trim();
+                .replaceAll("&nbsp;", " ");
+        // Clean up excessive newlines
+        result = result.replaceAll("\\n{3,}", "\n\n");
+        return result.trim();
     }
 
     private LocalDateTime parseRelativeTime(String text) {
