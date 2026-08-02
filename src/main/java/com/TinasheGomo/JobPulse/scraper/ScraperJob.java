@@ -2,7 +2,6 @@ package com.TinasheGomo.JobPulse.scraper;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -14,7 +13,6 @@ public class ScraperJob {
     private final ScraperOrchestrator orchestrator;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    @Scheduled(cron = "0 */15 * * * *")
     public void execute() {
         if (!running.compareAndSet(false, true)) {
             log.warn("⚠ Scraper already running — skipping this cycle");
