@@ -228,8 +228,8 @@ public class ScraperOrchestrator {
             return false;
         }
 
-        // AI scoring for non-LinkedIn sources
-        if (cached == null && !"LINKEDIN".equals(source)) {
+        // AI scoring for all sources
+        if (cached == null) {
             log.info("[{}] Scoring job: '{}' at '{}' for user {}...",
                     source, job.getTitle(), job.getCompany(), alert.getUser().getId());
 
@@ -269,11 +269,9 @@ public class ScraperOrchestrator {
         Map<String, CacheEntry> userNotified = notifiedCache.computeIfAbsent(userKey, k -> new ConcurrentHashMap<>());
         if (!userNotified.containsKey(jobKey)) {
             Integer score = null;
-            if (!"LINKEDIN".equals(source)) {
-                var scoreResult = scoreJobFull(job, alert);
-                if (scoreResult != null) {
-                    score = scoreResult.score();
-                }
+            var scoreResult = scoreJobFull(job, alert);
+            if (scoreResult != null) {
+                score = scoreResult.score();
             }
 
             userJobService.saveUserJob(alert.getUser(), savedJob, score);
