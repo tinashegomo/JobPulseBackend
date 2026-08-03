@@ -10,8 +10,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,22 +26,16 @@ public class ApplyNowScraper implements JobScraper {
     private static final String USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
-    private static final Pattern SLUG_PATTERN =
-            Pattern.compile("/(\\d{4})/(\\d{2})/(\\d{2})/([^/]+)/?$");
-
-    private static final Pattern RELATIVE_TIME_PATTERN =
-            Pattern.compile("(\\d+)\\s*(minute|min|m\\b|hour|hr|h\\b|day|d\\b|week|w\\b|month|mo)");
-
     private static final Pattern POST_PATTERN =
-            Pattern.compile("<article[^>]*class=\"[^\"]*elementor-post[^\"]*\"[^>]*>(.*?)</article>",
+            Pattern.compile("<div[^>]*class=\"[^\"]*p-wrap[^\"]*\"[^>]*data-pid=\"(\\d+)\"[^>]*>(.*?)</div>\\s*<div[^>]*class=\"[^\"]*p-wrap",
                     Pattern.DOTALL);
 
     private static final Pattern POST_TITLE_PATTERN =
-            Pattern.compile("<h3[^>]*class=\"[^\"]*elementor-post__title[^\"]*\"[^>]*>\\s*<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",
+            Pattern.compile("<h2[^>]*class=\"[^\"]*entry-title[^\"]*\"[^>]*>\\s*<a[^>]*class=\"[^\"]*p-url[^\"]*\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",
                     Pattern.DOTALL);
 
     private static final Pattern POST_DATE_PATTERN =
-            Pattern.compile("<span[^>]*class=\"[^\"]*(?:elementor-post-date|elementor-post__meta-data)[^\"]*\"[^>]*>(.*?)</span>",
+            Pattern.compile("<time[^>]*class=\"[^\"]*updated[^\"]*\"[^>]*datetime=\"([^\"]+)\"[^>]*>(.*?)</time>",
                     Pattern.DOTALL);
 
     private static final int MAX_RETRIES = 3;
@@ -54,24 +51,30 @@ public class ApplyNowScraper implements JobScraper {
     }
 
     @Override
+    public Set<String> supportedLocations() {
+        return Set.of("Zimbabwe", "ZW");
+    }
+
+    @Override
     public List<ScrapedJob> scrape(String keywords, String location) {
-        log.info("[ApplyNow] 🌐 Scraping Zimbabwe job listings from {}", APPLY_NOW_URL);
+        log.info("[ApplyNow] Scraping Zimbabwe job listings from {}", APPLY_NOW_URL);
         List<ScrapedJob> jobs = new ArrayList<>();
 
         try {
             String html = fetchPage(APPLY_NOW_URL);
             log.info("[ApplyNow] Fetched HTML ({} bytes)", html.length());
 
-            Matcher postMatcher = POST_PATTERN.matcher(html);
-            int postCount = 0;
+            // Split into post blocks by finding each p-wrap container
+            String[] blocks = html.split("<div[^>]*class=\"[^\"]*p-wrap[^\"]*\"[^>]*data-pid=\"");
+            log.info("[ApplyNow] Found {} post blocks", blocks.length - 1);
 
-            while (postMatcher.find()) {
-                postCount++;
-                String postHtml = postMatcher.group(1);
+            for (int i = 1; i < blocks.length; i++) {
+                String block = blocks[i];
 
-                Matcher titleMatcher = POST_TITLE_PATTERN.matcher(postHtml);
+                // Extract title and URL
+                Matcher titleMatcher = POST_TITLE_PATTERN.matcher(block);
                 if (!titleMatcher.find()) {
-                    log.debug("[ApplyNow] Post #{}: no title found, skipping", postCount);
+                    log.debug("[ApplyNow] Block #{}: no title found, skipping", i);
                     continue;
                 }
 
@@ -79,18 +82,22 @@ public class ApplyNowScraper implements JobScraper {
                 String title = stripTags(titleMatcher.group(2)).trim();
 
                 if (title.isEmpty() || jobUrl.isEmpty()) {
-                    log.debug("[ApplyNow] Post #{}: empty title or url, skipping", postCount);
+                    log.debug("[ApplyNow] Block #{}: empty title or url, skipping", i);
                     continue;
                 }
 
+                // Extract date
                 String postedText = "";
-                Matcher dateMatcher = POST_DATE_PATTERN.matcher(postHtml);
+                LocalDateTime postedAt = null;
+                Matcher dateMatcher = POST_DATE_PATTERN.matcher(block);
                 if (dateMatcher.find()) {
-                    postedText = stripTags(dateMatcher.group(1)).trim();
+                    String isoDatetime = dateMatcher.group(1).trim();
+                    postedText = stripTags(dateMatcher.group(2)).trim();
+                    postedAt = parseIsoDatetime(isoDatetime);
                 }
 
+                // Extract external ID from URL slug
                 String externalJobId = extractExternalJobId(jobUrl);
-                LocalDateTime postedAt = parseRelativeTime(postedText);
 
                 ScrapedJob job = ScrapedJob.builder()
                         .externalJobId(externalJobId)
@@ -108,9 +115,9 @@ public class ApplyNowScraper implements JobScraper {
                 jobs.add(job);
             }
 
-            log.info("[ApplyNow] ✅ Parsed {} jobs from Zimbabwe listings ({} posts scanned)", jobs.size(), postCount);
+            log.info("[ApplyNow] Parsed {} jobs from Zimbabwe listings", jobs.size());
         } catch (Exception e) {
-            log.error("[ApplyNow] ❌ Scrape failed: {}", e.getMessage());
+            log.error("[ApplyNow] Scrape failed: {}", e.getMessage());
         }
 
         return jobs;
@@ -159,11 +166,26 @@ public class ApplyNowScraper implements JobScraper {
     }
 
     private String extractExternalJobId(String jobUrl) {
-        Matcher matcher = SLUG_PATTERN.matcher(jobUrl);
+        // Extract slug from URL like /2026/08/03/empowerbank-11/
+        Matcher matcher = Pattern.compile("/(\\d{4})/(\\d{2})/(\\d{2})/([^/]+)/?$").matcher(jobUrl);
         if (matcher.find()) {
             return matcher.group(4);
         }
         return jobUrl.replaceAll("\\W+", "_");
+    }
+
+    private LocalDateTime parseIsoDatetime(String isoDatetime) {
+        if (isoDatetime == null || isoDatetime.isEmpty()) {
+            return null;
+        }
+        try {
+            return OffsetDateTime.parse(isoDatetime)
+                    .withOffsetSameInstant(ZoneOffset.UTC)
+                    .toLocalDateTime();
+        } catch (Exception e) {
+            log.debug("[ApplyNow] Failed to parse datetime '{}': {}", isoDatetime, e.getMessage());
+            return null;
+        }
     }
 
     private String stripTags(String html) {
@@ -172,39 +194,5 @@ public class ApplyNowScraper implements JobScraper {
                 .replaceAll("&lt;", "<").replaceAll("&gt;", ">")
                 .replaceAll("&quot;", "\"").replaceAll("&#39;", "'")
                 .replaceAll("&nbsp;", " ").trim();
-    }
-
-    private LocalDateTime parseRelativeTime(String text) {
-        if (text == null || text.isEmpty()) {
-            return null;
-        }
-
-        String normalized = text.toLowerCase().trim();
-
-        if (normalized.contains("just now") || normalized.contains("moment")) {
-            return LocalDateTime.now();
-        }
-
-        Matcher matcher = RELATIVE_TIME_PATTERN.matcher(normalized);
-        if (!matcher.find()) {
-            return null;
-        }
-
-        int value = Integer.parseInt(matcher.group(1));
-        String unit = matcher.group(2);
-
-        if (unit.startsWith("min") || unit.equals("m")) {
-            return LocalDateTime.now().minusMinutes(value);
-        } else if (unit.startsWith("hour") || unit.equals("hr") || unit.equals("h")) {
-            return LocalDateTime.now().minusHours(value);
-        } else if (unit.startsWith("day") || unit.equals("d")) {
-            return LocalDateTime.now().minusDays(value);
-        } else if (unit.startsWith("week") || unit.equals("w")) {
-            return LocalDateTime.now().minusDays(value * 7L);
-        } else if (unit.startsWith("month") || unit.equals("mo")) {
-            return LocalDateTime.now().minusDays(value * 30L);
-        }
-
-        return null;
     }
 }

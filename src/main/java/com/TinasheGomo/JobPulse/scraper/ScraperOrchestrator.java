@@ -141,8 +141,16 @@ public class ScraperOrchestrator {
         int totalSemanticChecked = 0;
         int totalSaved = 0;
 
+        Set<String> supportedLocations = scraper.supportedLocations();
+
         for (int i = 0; i < alerts.size(); i++) {
             Alert alert = alerts.get(i);
+
+            if (!supportedLocations.isEmpty() && !matchesSupportedLocation(alert.getLocation(), supportedLocations)) {
+                log.debug("[{}] Skipping alert — location '{}' not in supported: {}", source, alert.getLocation(), supportedLocations);
+                continue;
+            }
+
             try {
                 if (i > 0) {
                     long delay = 3000 + (long) (Math.random() * 5000);
@@ -192,6 +200,15 @@ public class ScraperOrchestrator {
         }
 
         return new SourceResult(totalScraped, totalAfterFilter, totalExtracted, totalSemanticChecked, totalSaved);
+    }
+
+    private boolean matchesSupportedLocation(String alertLocation, Set<String> supportedLocations) {
+        if (alertLocation == null || alertLocation.isBlank()) {
+            return true; // No location specified = match all
+        }
+        String locLower = alertLocation.toLowerCase().trim();
+        return supportedLocations.stream()
+                .anyMatch(s -> locLower.contains(s.toLowerCase()) || s.toLowerCase().contains(locLower));
     }
 
     // ── PHASE 2: Deduplicate + Pre-filter ──────────────────────────────────
