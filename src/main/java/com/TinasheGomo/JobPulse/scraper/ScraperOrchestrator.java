@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class ScraperOrchestrator {
 
-    private static final int MAX_JOB_AGE_HOURS = 10;
+    private static final int MAX_JOB_AGE_HOURS = 15;
     private static final int AI_SCORE_THRESHOLD = 50;
     private static final int SEMANTIC_UPPER_THRESHOLD = 85;
     private static final int SEMANTIC_LOWER_THRESHOLD = 50;
@@ -205,9 +205,16 @@ public class ScraperOrchestrator {
     }
 
     private boolean isWithinAgeWindow(ScrapedJob job) {
-        if (job.getPostedAt() == null) return true;
+        if (job.getPostedAt() == null) {
+            log.debug("[AgeFilter] Rejecting job — no postedAt date: {}", job.getTitle());
+            return false;
+        }
         long hours = Duration.between(job.getPostedAt(), LocalDateTime.now()).toHours();
-        return hours <= MAX_JOB_AGE_HOURS;
+        if (hours > MAX_JOB_AGE_HOURS) {
+            log.debug("[AgeFilter] Rejecting job — posted {}h ago: {}", hours, job.getTitle());
+            return false;
+        }
+        return true;
     }
 
     private boolean isAlreadyRejected(ScrapedJob job, String source) {

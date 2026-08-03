@@ -32,7 +32,7 @@ public class LinkedInScraper implements JobScraper {
     );
 
     private static final Pattern RELATIVE_TIME_PATTERN =
-            Pattern.compile("(\\d+)\\s*(minute|min|m\\b|hour|hr|h\\b|day|d\\b|week|w\\b|month|mo)");
+            Pattern.compile("(\\d+)\\s*(minute|min|m\\b|hour|hr|h\\b|day|d\\b|week|w\\b|month|mo|year|yr|y\\b)");
 
     private static final Pattern CARD_PATTERN =
             Pattern.compile(
@@ -90,6 +90,15 @@ public class LinkedInScraper implements JobScraper {
 
                 if (postedAt == null && datetimeAttr != null && !datetimeAttr.isEmpty()) {
                     postedAt = parseIsoDateTime(datetimeAttr);
+                }
+
+                // Early rejection: skip jobs older than 15 hours
+                if (postedAt != null) {
+                    long hours = java.time.Duration.between(postedAt, LocalDateTime.now()).toHours();
+                    if (hours > 15) {
+                        log.debug("[LinkedIn] Skipping old job ({}h ago): {}", hours, card.get("title"));
+                        continue;
+                    }
                 }
 
                 String jobUrl = card.get("jobUrl");
@@ -293,6 +302,8 @@ public class LinkedInScraper implements JobScraper {
             return LocalDateTime.now().minusDays(value * 7L);
         } else if (unit.startsWith("month") || unit.equals("mo")) {
             return LocalDateTime.now().minusDays(value * 30L);
+        } else if (unit.startsWith("year") || unit.equals("yr") || unit.equals("y")) {
+            return LocalDateTime.now().minusDays(value * 365L);
         }
 
         return null;
