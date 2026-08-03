@@ -12,4 +12,6 @@ public interface JobService {
     Optional<Job> getJobBySourceAndExternalId(String source, String externalJobId);
     List<JobResponse> getAllJobs();
     JobResponse getJobById(UUID id);
+    List<Job> getUnextractedJobs();
+    List<String> getExistingExternalIds(String source, List<String> externalIds);
 }

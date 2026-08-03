@@ -43,4 +43,14 @@ public class JobServiceImpl implements JobService {
                 .orElseThrow(() -> new NotFoundException("Job not found"));
         return jobMapper.toResponse(job);
     }
+
+    @Override
+    public List<Job> getUnextractedJobs() {
+        return jobRepository.findUnextractedJobs();
+    }
+
+    @Override
+    public List<String> getExistingExternalIds(String source, List<String> externalIds) {
+        return jobRepository.findExistingExternalIds(source, externalIds);
+    }
 }

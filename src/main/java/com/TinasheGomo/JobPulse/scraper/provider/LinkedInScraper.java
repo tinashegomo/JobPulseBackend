@@ -1,5 +1,7 @@
 package com.TinasheGomo.JobPulse.scraper.provider;
 
+import com.TinasheGomo.JobPulse.scraper.DescriptionFetcher;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -17,7 +19,10 @@ import java.util.regex.Pattern;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class LinkedInScraper implements JobScraper {
+
+    private final DescriptionFetcher descriptionFetcher;
 
     private static final String USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
@@ -39,18 +44,6 @@ public class LinkedInScraper implements JobScraper {
                     "<time(?:(?:[^>]*datetime=\"([^\"]*?)\")?)[^>]*>(.*?)</time>",
                     Pattern.DOTALL
             );
-
-    private static final Pattern DESCRIPTION_PATTERN_1 =
-            Pattern.compile("<div[^>]*class=\"[^\"]*show-more-less-html__markup[^\"]*\"[^>]*>(.*?)</div>",
-                    Pattern.DOTALL);
-
-    private static final Pattern DESCRIPTION_PATTERN_2 =
-            Pattern.compile("<div[^>]*class=\"[^\"]*description__text[^\"]*\"[^>]*>(.*?)</div>",
-                    Pattern.DOTALL);
-
-    private static final Pattern DESCRIPTION_PATTERN_3 =
-            Pattern.compile("<div[^>]*class=\"[^\"]*job-details-workflow__markdown[^\"]*\"[^>]*>(.*?)</div>",
-                    Pattern.DOTALL);
 
     private final Map<String, String> searchCache = new ConcurrentHashMap<>();
 
@@ -75,7 +68,6 @@ public class LinkedInScraper implements JobScraper {
         long start = System.currentTimeMillis();
         List<ScrapedJob> jobs = new ArrayList<>();
         int pagesVisited = 0;
-        int duplicatesSkipped = 0;
 
         try {
             String html = fetchSearchPage(searchUrl);
@@ -83,9 +75,8 @@ public class LinkedInScraper implements JobScraper {
             List<Map<String, String>> rawCards = parseJobCards(html);
             log.info("[LinkedIn] Found {} raw job cards in HTML", rawCards.size());
 
-            int parsedCount = 0;
-            int failedParse = 0;
-
+            // Phase 1: Build job objects without descriptions
+            List<String> jobUrls = new ArrayList<>();
             for (Map<String, String> card : rawCards) {
                 String company = card.get("company");
                 if (company != null && EXCLUDED_COMPANIES.contains(company.toLowerCase())) {
@@ -97,46 +88,55 @@ public class LinkedInScraper implements JobScraper {
                 String datetimeAttr = card.get("datetimeAttr");
                 LocalDateTime postedAt = parseRelativeTime(postedText);
 
-                // Fallback: try parsing the datetime attribute (ISO format)
                 if (postedAt == null && datetimeAttr != null && !datetimeAttr.isEmpty()) {
                     postedAt = parseIsoDateTime(datetimeAttr);
-                    if (postedAt != null) {
-                        log.debug("[LinkedIn] Parsed datetime attr '{}' for '{}'", datetimeAttr, card.get("title"));
-                    }
                 }
 
-                if (postedAt == null && postedText != null && !postedText.isEmpty()) {
-                    log.debug("[LinkedIn] Could not parse postedText '{}' for '{}'", postedText, card.get("title"));
-                    failedParse++;
+                String jobUrl = card.get("jobUrl");
+                if (jobUrl != null && !jobUrl.isEmpty()) {
+                    jobUrls.add(jobUrl);
                 }
-                if (postedAt != null) parsedCount++;
-
-                String description = fetchJobDescription(card.get("jobUrl"));
 
                 ScrapedJob job = ScrapedJob.builder()
                         .externalJobId(card.get("externalJobId"))
                         .title(card.get("title"))
                         .company(company)
                         .location(card.get("location"))
-                        .jobUrl(card.get("jobUrl"))
+                        .jobUrl(jobUrl)
                         .postedText(postedText)
                         .postedAt(postedAt)
                         .tags(new ArrayList<>())
-                        .description(description)
+                        .description("")
                         .build();
 
                 jobs.add(job);
             }
 
-            log.info("[LinkedIn] Parsed {} jobs ({} with valid postedAt, {} with unparseable time)",
-                    jobs.size(), parsedCount, failedParse);
+            log.info("[LinkedIn] Parsed {} jobs, now fetching descriptions in parallel...", jobs.size());
+
+            // Phase 2: Fetch all descriptions in parallel
+            if (!jobUrls.isEmpty()) {
+                Map<String, String> descriptions = descriptionFetcher.fetchDescriptionsParallel(jobUrls);
+
+                // Phase 3: Assign descriptions back to jobs
+                int descCount = 0;
+                for (ScrapedJob job : jobs) {
+                    String desc = descriptions.get(job.getJobUrl());
+                    if (desc != null && !desc.isBlank()) {
+                        job.setDescription(desc);
+                        descCount++;
+                    }
+                }
+                log.info("[LinkedIn] ✅ Got descriptions for {}/{} jobs", descCount, jobs.size());
+            }
+
         } catch (Exception e) {
             log.error("[LinkedIn] Scrape failed for {}: {}", searchUrl, e.getMessage());
         }
 
         long elapsed = (System.currentTimeMillis() - start) / 1000;
-        log.info("[LinkedIn] ✅ Done — {} jobs found, {} pages visited, {} duplicates skipped ({}s elapsed)",
-                jobs.size(), pagesVisited, duplicatesSkipped, elapsed);
+        log.info("[LinkedIn] ✅ Done — {} jobs found, {} pages visited ({}s elapsed)",
+                jobs.size(), pagesVisited, elapsed);
         return jobs;
     }
 
@@ -239,30 +239,6 @@ public class LinkedInScraper implements JobScraper {
         }
 
         return jobs;
-    }
-
-    private String fetchJobDescription(String jobUrl) {
-        if (jobUrl == null || jobUrl.isEmpty()) {
-            return "";
-        }
-
-        try {
-            String html = fetchSearchPage(jobUrl);
-
-            Pattern[] selectors = {DESCRIPTION_PATTERN_1, DESCRIPTION_PATTERN_2, DESCRIPTION_PATTERN_3};
-            for (Pattern pattern : selectors) {
-                Matcher m = pattern.matcher(html);
-                if (m.find()) {
-                    return stripTags(m.group(1)).trim();
-                }
-            }
-
-            log.debug("[LinkedIn] No description container found on {}", jobUrl);
-            return "";
-        } catch (Exception e) {
-            log.warn("[LinkedIn] Failed to fetch job description: {}", e.getMessage());
-            return "";
-        }
     }
 
     private String stripTags(String html) {

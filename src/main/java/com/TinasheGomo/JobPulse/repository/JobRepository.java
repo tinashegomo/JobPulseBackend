@@ -15,6 +15,12 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
     Optional<Job> findBySourceAndExternalJobId(String source, String externalJobId);
     List<Job> findBySource(String source);
 
+    @Query("SELECT j FROM Job j WHERE j.profileExtracted = false")
+    List<Job> findUnextractedJobs();
+
+    @Query("SELECT j.externalJobId FROM Job j WHERE j.source = :source AND j.externalJobId IN :externalIds")
+    List<String> findExistingExternalIds(String source, List<String> externalIds);
+
     @Modifying
     @Query("DELETE FROM Job j WHERE j.id NOT IN (SELECT DISTINCT uj.job.id FROM UserJob uj)")
     void deleteOrphanedJobs();

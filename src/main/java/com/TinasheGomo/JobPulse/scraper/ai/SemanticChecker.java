@@ -43,6 +43,50 @@ public class SemanticChecker {
 
     public record SemanticResult(int score, String reason) {}
 
+    /**
+     * Check using pre-extracted JobProfile (no description needed).
+     * Used when job profile is already cached.
+     */
+    public SemanticResult checkWithProfile(CandidateProfile candidate,
+                                           String jobTitle,
+                                           String jobCompany,
+                                           List<String> jobRequiredSkills) {
+        String apiKey = aiConfig.getApiKey();
+        if (apiKey == null || apiKey.isBlank()) {
+            log.warn("[SemanticChecker] ❌ Missing AI API key — skipping");
+            return null;
+        }
+
+        String candSkills = candidate.getSkills() != null
+                ? String.join(", ", candidate.getSkills())
+                : "";
+        String candTitle = candidate.getPreferredRoles() != null && !candidate.getPreferredRoles().isEmpty()
+                ? candidate.getPreferredRoles().get(0) : "software developer";
+
+        String jobSkills = jobRequiredSkills != null ? String.join(", ", jobRequiredSkills) : "";
+
+        String prompt = String.format("""
+                Quick check: does this job feel like a good fit for this candidate?
+
+                Candidate: %s — skills: %s
+                Job: %s at %s — required skills: %s
+
+                Rate alignment from 0-5:
+                5 = perfect fit, exactly what they do
+                4 = strong fit, very relevant
+                3 = decent fit, related field
+                2 = weak fit, tangentially related
+                1 = poor fit, different field
+                0 = no fit at all
+
+                Return ONLY raw JSON: {"score": <0-5>, "reason": "<one short sentence>"}""",
+                candTitle, candSkills,
+                jobTitle != null ? jobTitle : "", jobCompany != null ? jobCompany : "Unknown", jobSkills);
+
+        log.info("[SemanticChecker] Profile-based prompt size: {} chars, calling AI...", prompt.length());
+        return callAiSemantic(prompt);
+    }
+
     public SemanticResult check(CandidateProfile candidate, ScrapedJob job) {
         String apiKey = aiConfig.getApiKey();
         if (apiKey == null || apiKey.isBlank()) {
@@ -52,8 +96,8 @@ public class SemanticChecker {
 
         String plainDescription = (job.getDescription() != null ? job.getDescription() : "")
                 .replaceAll("<[^>]+>", " ");
-        if (plainDescription.length() > 2000) {
-            plainDescription = plainDescription.substring(0, 2000);
+        if (plainDescription.length() > 500) {
+            plainDescription = plainDescription.substring(0, 500);
         }
 
         String candSkills = candidate.getSkills() != null
@@ -64,7 +108,7 @@ public class SemanticChecker {
 
         String descSnippet = plainDescription.isBlank()
                 ? ""
-                : "\nDescription snippet:\n" + plainDescription.substring(0, Math.min(1000, plainDescription.length()));
+                : "\nDescription snippet:\n" + plainDescription;
 
         String prompt = String.format(
                 PROMPT_TEMPLATE,
@@ -75,6 +119,11 @@ public class SemanticChecker {
                 descSnippet);
 
         log.info("[SemanticChecker] Prompt size: {} chars, calling AI...", prompt.length());
+        return callAiSemantic(prompt);
+    }
+
+    private SemanticResult callAiSemantic(String prompt) {
+        String apiKey = aiConfig.getApiKey();
 
         Exception lastError = null;
 

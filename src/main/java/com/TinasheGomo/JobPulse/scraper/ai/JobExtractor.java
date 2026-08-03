@@ -86,8 +86,8 @@ public class JobExtractor {
 
         String plainDescription = (job.getDescription() != null ? job.getDescription() : "")
                 .replaceAll("<[^>]+>", " ");
-        if (plainDescription.length() > 3000) {
-            plainDescription = plainDescription.substring(0, 3000);
+        if (plainDescription.length() > 1500) {
+            plainDescription = plainDescription.substring(0, 1500);
         }
 
         String descSection = plainDescription.isBlank()
@@ -151,6 +151,135 @@ public class JobExtractor {
         log.error("[JobExtractor] ❌ All models exhausted. Last error: {}",
                 lastError != null ? lastError.getMessage() : "unknown");
         return null;
+    }
+
+    /**
+     * Batch extract: sends multiple jobs in one AI call.
+     * Returns a list of JobProfile in the same order as input jobs.
+     * If a job fails extraction, its entry will be null.
+     */
+    public List<JobProfile> extractBatch(List<ScrapedJob> jobs) {
+        String apiKey = aiConfig.getApiKey();
+        if (apiKey == null || apiKey.isBlank() || jobs == null || jobs.isEmpty()) {
+            return jobs.stream().map(j -> (JobProfile) null).toList();
+        }
+
+        // Build batch prompt with all jobs
+        StringBuilder jobsSection = new StringBuilder();
+        for (int i = 0; i < jobs.size(); i++) {
+            ScrapedJob job = jobs.get(i);
+            String desc = (job.getDescription() != null ? job.getDescription() : "")
+                    .replaceAll("<[^>]+>", " ");
+            if (desc.length() > 1500) desc = desc.substring(0, 1500);
+
+            jobsSection.append(String.format("""
+                    
+                    Job #%d:
+                    Title: %s
+                    Company: %s
+                    Location: %s
+                    %s
+                    """,
+                    i + 1,
+                    job.getTitle() != null ? job.getTitle() : "",
+                    job.getCompany() != null ? job.getCompany() : "Unknown",
+                    job.getLocation() != null ? job.getLocation() : "Unknown",
+                    desc.isBlank() ? "" : "Description:\n" + desc
+            ));
+        }
+
+        String prompt = String.format("""
+                Extract structured information from these %d job postings. Be precise.
+
+                %s
+
+                Return ONLY raw JSON (no markdown, no code fences) — an array of objects, one per job:
+                [
+                  {
+                    "jobIndex": 1,
+                    "title": "cleaned job title",
+                    "level": "entry|junior|mid|senior|lead|principal|manager",
+                    "workType": "remote|hybrid|onsite|unknown",
+                    "requiredSkills": ["Java", "Spring Boot"],
+                    "bonusSkills": ["Docker"],
+                    "roleCategory": "backend|frontend|fullstack|mobile|devops|data|design|other",
+                    "locationNormalized": "Remote|City, Country|Unknown",
+                    "isRecruitingAgency": false,
+                    "confidence": 0.85
+                  }
+                ]
+
+                Rules:
+                - Return exactly %d objects in the array
+                - jobIndex must match the Job # number (1-based)
+                - level: infer from title and description keywords
+                - workType: "remote" if explicitly remote, "hybrid" if mix, "onsite" if office, "unknown" if unclear
+                - requiredSkills: hard skills the job REQUIRES
+                - bonusSkills: nice-to-have skills
+                - roleCategory: best fit category
+                - isRecruitingAgency: true if posting is from a staffing agency
+                - confidence: how confident you are (0-1)""",
+                jobs.size(), jobsSection, jobs.size());
+
+        log.info("[JobExtractor] Batch prompt size: {} chars for {} jobs, calling AI...", prompt.length(), jobs.size());
+
+        Exception lastError = null;
+
+        for (String model : AiModels.MODELS) {
+            long modelStart = System.currentTimeMillis();
+            try {
+                log.info("[JobExtractor] 🔄 Trying model {} for batch of {} jobs...", model, jobs.size());
+
+                String rawText = RetryUtil.withRetry(
+                        () -> callAi(apiKey, model, prompt),
+                        "JobExtractorBatch:" + model);
+
+                long modelDuration = (System.currentTimeMillis() - modelStart) / 1000;
+
+                if (rawText == null || rawText.isBlank()) {
+                    throw new RuntimeException("Empty response from model");
+                }
+
+                JsonNode parsed = JsonParser.parseAiJson(rawText);
+
+                if (parsed == null || !parsed.isArray()) {
+                    log.warn("[JobExtractor] Batch response is not an array: {}", parsed);
+                    // Fall back to individual extraction
+                    return jobs.stream().map(this::extract).toList();
+                }
+
+                log.info("[JobExtractor] ✅ Batch success with model {} in {}s — {} profiles returned",
+                        model, modelDuration, parsed.size());
+
+                // Map by jobIndex
+                Map<Integer, JsonNode> profileMap = new HashMap<>();
+                for (JsonNode node : parsed) {
+                    int idx = node.has("jobIndex") ? node.get("jobIndex").asInt(0) : 0;
+                    if (idx > 0) profileMap.put(idx, node);
+                }
+
+                List<JobProfile> results = new ArrayList<>();
+                for (int i = 0; i < jobs.size(); i++) {
+                    JsonNode profileJson = profileMap.get(i + 1);
+                    if (profileJson != null) {
+                        results.add(normalizeProfile(profileJson, jobs.get(i)));
+                    } else {
+                        results.add(null);
+                    }
+                }
+                return results;
+
+            } catch (HttpClientErrorException.Unauthorized | HttpClientErrorException.Forbidden e) {
+                throw new RuntimeException("AI API authentication failed", e);
+            } catch (Exception e) {
+                lastError = e;
+                log.warn("[JobExtractor] ❌ Model {} batch failed after {}s: {}", model,
+                        (System.currentTimeMillis() - modelStart) / 1000, e.getMessage());
+            }
+        }
+
+        log.error("[JobExtractor] ❌ All models exhausted for batch. Falling back to individual extraction.");
+        return jobs.stream().map(this::extract).toList();
     }
 
     private String callAi(String apiKey, String model, String prompt) {
