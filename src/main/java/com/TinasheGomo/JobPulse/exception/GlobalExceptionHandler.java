@@ -10,8 +10,10 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+import lombok.extern.slf4j.Slf4j;
 import java.util.stream.Collectors;
 
+@Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -82,6 +84,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleGenericException(
             Exception exception,
             HttpServletRequest request) {
+        log.error("Unhandled exception at {}: ", request.getRequestURI(), exception);
         ErrorResponse error = new ErrorResponse(
                 "An unexpected error occurred",
                 request.getRequestURI(),
