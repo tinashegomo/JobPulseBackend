@@ -2,12 +2,8 @@ package com.TinasheGomo.JobPulse.scraper;
 
 import com.TinasheGomo.JobPulse.entity.Alert;
 import com.TinasheGomo.JobPulse.entity.Job;
-import com.TinasheGomo.JobPulse.entity.JobProfile;
 import com.TinasheGomo.JobPulse.dto.resumeprofile.ResumeProfileResponse;
 import com.TinasheGomo.JobPulse.repository.AlertRepository;
-import com.TinasheGomo.JobPulse.repository.JobProfileRepository;
-import com.TinasheGomo.JobPulse.scraper.ai.JobExtractor;
-import com.TinasheGomo.JobPulse.scraper.ai.SemanticChecker;
 import com.TinasheGomo.JobPulse.scraper.provider.JobScraper;
 import com.TinasheGomo.JobPulse.scraper.provider.ScrapedJob;
 import com.TinasheGomo.JobPulse.service.JobService;
@@ -16,7 +12,6 @@ import com.TinasheGomo.JobPulse.service.UserJobService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -29,10 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ScraperOrchestrator {
 
     private static final int MAX_JOB_AGE_HOURS = 15;
-    private static final int AI_SCORE_THRESHOLD = 50;
-    private static final int SEMANTIC_UPPER_THRESHOLD = 85;
-    private static final int SEMANTIC_LOWER_THRESHOLD = 50;
-    private static final int BATCH_SIZE = 5;
+    private static final int SCORE_THRESHOLD = 50;
 
     private static final Set<String> STOPWORDS = Set.of("a", "an", "the", "in", "on", "of", "for", "and", "or");
 
@@ -40,10 +32,7 @@ public class ScraperOrchestrator {
     private final JobService jobService;
     private final UserJobService userJobService;
     private final ResumeProfileService resumeProfileService;
-    private final JobProfileRepository jobProfileRepository;
     private final List<JobScraper> scrapers;
-    private final JobExtractor jobExtractor;
-    private final SemanticChecker semanticChecker;
     private final NotificationService notificationService;
 
     private final Map<String, CacheEntry> jobCache = new ConcurrentHashMap<>();
@@ -53,8 +42,8 @@ public class ScraperOrchestrator {
 
     public void run() {
         log.info("═══════════════════════════════════════════════════════");
-        log.info("🚀 OPTIMIZED SCRAPER RUN — {} scrapers registered", scrapers.size());
-        log.info("   Pipeline: Scrape → Dedupe → Pre-filter → Extract → Score → Semantic (borderline only) → Notify");
+        log.info("🚀 DETERMINISTIC SCRAPER RUN — {} scrapers registered", scrapers.size());
+        log.info("   Pipeline: Scrape → Dedupe → Extract (no AI) → Score (deterministic) → Notify");
         log.info("═══════════════════════════════════════════════════════");
 
         long runStart = System.currentTimeMillis();
@@ -73,7 +62,7 @@ public class ScraperOrchestrator {
             return;
         }
 
-        // Phase 0: Pre-load all resume profiles once (cache for this run)
+        // Phase 0: Pre-load resume profiles (skills per user) — once per run
         Map<UUID, ResumeProfileResponse> resumeCache = new HashMap<>();
         log.info("Phase 0: Pre-loading resume profiles...");
         for (Alert alert : alerts) {
@@ -90,8 +79,6 @@ public class ScraperOrchestrator {
         int totalJobsScraped = 0;
         int totalJobsAfterFilter = 0;
         int totalExtracted = 0;
-        int totalScored = 0;
-        int totalSemanticChecked = 0;
         int totalSaved = 0;
 
         for (JobScraper scraper : scrapers) {
@@ -104,14 +91,13 @@ public class ScraperOrchestrator {
             try {
                 SourceResult result = processScraper(scraper, alerts, resumeCache);
                 long duration = (System.currentTimeMillis() - sourceStart) / 1000;
-                log.info("📡 {} — done ({}s): {} scraped → {} after filter → {} extracted → {} semantic checked → {} saved",
+                log.info("📡 {} — done ({}s): {} scraped → {} after filter → {} extracted → {} saved",
                         source, duration,
-                        result.scraped, result.afterFilter, result.extracted, result.semanticChecked, result.saved);
+                        result.scraped, result.afterFilter, result.extracted, result.saved);
                 totalSourcesProcessed++;
                 totalJobsScraped += result.scraped;
                 totalJobsAfterFilter += result.afterFilter;
                 totalExtracted += result.extracted;
-                totalSemanticChecked += result.semanticChecked;
                 totalSaved += result.saved;
             } catch (Exception e) {
                 long duration = (System.currentTimeMillis() - sourceStart) / 1000;
@@ -124,13 +110,12 @@ public class ScraperOrchestrator {
         log.info("═══════════════════════════════════════════════════════");
         log.info("📊 RUN COMPLETE ({}s)", runDuration);
         log.info("   Sources: {}/{} succeeded", totalSourcesProcessed, scrapers.size());
-        log.info("   Jobs: {} scraped → {} after filter", totalJobsScraped, totalJobsAfterFilter);
-        log.info("   AI: {} extracted, {} semantic checked", totalExtracted, totalSemanticChecked);
+        log.info("   Jobs: {} scraped → {} after filter → {} extracted", totalJobsScraped, totalJobsAfterFilter, totalExtracted);
         log.info("   Saved: {} jobs, {} users notified", totalSaved, notifiedCache.size());
         log.info("═══════════════════════════════════════════════════════");
     }
 
-    private record SourceResult(int scraped, int afterFilter, int extracted, int semanticChecked, int saved) {}
+    private record SourceResult(int scraped, int afterFilter, int extracted, int saved) {}
 
     private SourceResult processScraper(JobScraper scraper, List<Alert> alerts,
                                          Map<UUID, ResumeProfileResponse> resumeCache) {
@@ -138,7 +123,6 @@ public class ScraperOrchestrator {
         int totalScraped = 0;
         int totalAfterFilter = 0;
         int totalExtracted = 0;
-        int totalSemanticChecked = 0;
         int totalSaved = 0;
 
         Set<String> supportedLocations = scraper.supportedLocations();
@@ -174,22 +158,24 @@ public class ScraperOrchestrator {
 
                 if (filteredJobs.isEmpty()) continue;
 
-                // ── PHASE 3: EXTRACT JOB PROFILES (AI — once per new job) ────
-                List<ScrapedJob> jobsNeedingExtraction = filterJobsNeedingExtraction(filteredJobs, source);
-                int extracted = 0;
-                if (!jobsNeedingExtraction.isEmpty()) {
-                    extracted = extractJobProfiles(jobsNeedingExtraction, source);
-                    totalExtracted += extracted;
-                }
-                log.info("[{}] Phase 3: {} jobs extracted ({} were already cached)",
-                        source, extracted, filteredJobs.size() - jobsNeedingExtraction.size());
-
-                // ── PHASE 4: SCORE (deterministic) + PHASE 5: SEMANTIC (borderline) ──
+                // ── PHASE 3: DETERMINISTIC EXTRACT + PHASE 4: SCORE ──────────
                 ResumeProfileResponse resumeProfile = resumeCache.get(alert.getUser().getId());
+                List<String> userSkills = getUserSkills(resumeProfile);
 
                 for (ScrapedJob job : filteredJobs) {
-                    boolean saved = scoreAndMaybeSemantic(job, source, alert, resumeProfile);
+                    // Skip if user already has this job
+                    if (userJobService.userHasJob(alert.getUser().getId(), job.getExternalJobId(), source)) {
+                        continue;
+                    }
+
+                    // Deterministic extraction (no AI, <1ms)
+                    DeterministicJobExtractor.JobProfile jobProfile =
+                            DeterministicJobExtractor.extract(job, userSkills);
+
+                    // Deterministic scoring
+                    boolean saved = scoreJob(job, source, alert, resumeProfile, jobProfile, userSkills);
                     if (saved) {
+                        totalExtracted++;
                         totalSaved++;
                     }
                 }
@@ -199,12 +185,19 @@ public class ScraperOrchestrator {
             }
         }
 
-        return new SourceResult(totalScraped, totalAfterFilter, totalExtracted, totalSemanticChecked, totalSaved);
+        return new SourceResult(totalScraped, totalAfterFilter, totalExtracted, totalSaved);
+    }
+
+    private List<String> getUserSkills(ResumeProfileResponse resumeProfile) {
+        if (resumeProfile == null || resumeProfile.getSkills() == null || resumeProfile.getSkills().isBlank()) {
+            return List.of();
+        }
+        return Arrays.asList(resumeProfile.getSkills().split(",\\s*"));
     }
 
     private boolean matchesSupportedLocation(String alertLocation, Set<String> supportedLocations) {
         if (alertLocation == null || alertLocation.isBlank()) {
-            return true; // No location specified = match all
+            return true;
         }
         String locLower = alertLocation.toLowerCase().trim();
         return supportedLocations.stream()
@@ -261,173 +254,29 @@ public class ScraperOrchestrator {
                 titleLower.contains(word) || descLower.contains(word) || tagsLower.stream().anyMatch(tag -> tag.contains(word)));
     }
 
-    // ── PHASE 3: Extract Job Profiles (AI — batch, once per job) ──────────
+    // ── PHASE 3+4: Deterministic Extract + Score ───────────────────────────
 
-    private List<ScrapedJob> filterJobsNeedingExtraction(List<ScrapedJob> jobs, String source) {
-        // Get all external IDs that already have profiles
-        List<String> externalIds = jobs.stream().map(ScrapedJob::getExternalJobId).toList();
-        List<String> existingIds = jobProfileRepository.findExistingExternalIds(source, externalIds);
-        Set<String> existingSet = new HashSet<>(existingIds);
-
-        return jobs.stream()
-                .filter(job -> !existingSet.contains(job.getExternalJobId()))
-                .toList();
-    }
-
-    @Transactional
-    private int extractJobProfiles(List<ScrapedJob> jobs, String source) {
-        int extracted = 0;
-
-        // Process in batches of BATCH_SIZE
-        for (int batchStart = 0; batchStart < jobs.size(); batchStart += BATCH_SIZE) {
-            int batchEnd = Math.min(batchStart + BATCH_SIZE, jobs.size());
-            List<ScrapedJob> batch = jobs.subList(batchStart, batchEnd);
-
-            log.info("[{}] Extracting batch {}/{} ({} jobs)...",
-                    source, (batchStart / BATCH_SIZE) + 1,
-                    (jobs.size() + BATCH_SIZE - 1) / BATCH_SIZE, batch.size());
-
-            try {
-                List<JobExtractor.JobProfile> profiles = jobExtractor.extractBatch(batch);
-
-                for (int i = 0; i < batch.size(); i++) {
-                    ScrapedJob job = batch.get(i);
-                    JobExtractor.JobProfile profile = profiles.get(i);
-
-                    if (profile == null) {
-                        log.warn("[{}] Extraction returned null for '{}' — falling back to single extraction",
-                                source, job.getTitle());
-                        profile = jobExtractor.extract(job);
-                    }
-
-                    if (profile != null) {
-                        saveJobProfile(job, profile, source);
-                        extracted++;
-                    }
-                }
-            } catch (Exception e) {
-                log.error("[{}] Batch extraction failed: {} — falling back to individual", source, e.getMessage());
-                for (ScrapedJob job : batch) {
-                    try {
-                        JobExtractor.JobProfile profile = jobExtractor.extract(job);
-                        if (profile != null) {
-                            saveJobProfile(job, profile, source);
-                            extracted++;
-                        }
-                    } catch (Exception ex) {
-                        log.error("[{}] Individual extraction failed for '{}': {}", source, job.getTitle(), ex.getMessage());
-                    }
-                }
-            }
-        }
-
-        return extracted;
-    }
-
-    @Transactional
-    private void saveJobProfile(ScrapedJob job, JobExtractor.JobProfile profile, String source) {
-        Optional<Job> existingJob = jobService.getJobBySourceAndExternalId(source, job.getExternalJobId());
-        if (existingJob.isEmpty()) {
-            return; // Job not saved yet, profile will be saved when job is saved
-        }
-
-        Job savedJob = existingJob.get();
-
-        // Check if profile already exists
-        if (jobProfileRepository.existsBySourceAndExternalJobId(source, job.getExternalJobId())) {
-            return;
-        }
-
-        JobProfile jobProfile = new JobProfile();
-        jobProfile.setJob(savedJob);
-        jobProfile.setSource(source);
-        jobProfile.setExternalJobId(job.getExternalJobId());
-        jobProfile.setTitle(profile.title());
-        jobProfile.setLevel(profile.level());
-        jobProfile.setWorkType(profile.workType());
-        jobProfile.setRoleCategory(profile.roleCategory());
-        jobProfile.setRequiredSkills(String.join(", ", profile.requiredSkills()));
-        jobProfile.setBonusSkills(String.join(", ", profile.bonusSkills()));
-        jobProfile.setLocationNormalized(profile.locationNormalized());
-        jobProfile.setRecruitingAgency(profile.isRecruitingAgency());
-        jobProfile.setConfidence(profile.confidence());
-
-        jobProfileRepository.save(jobProfile);
-
-        // Mark job as extracted
-        savedJob.setProfileExtracted(true);
-        jobService.saveJob(savedJob);
-    }
-
-    // ── PHASE 4+5: Score + Semantic Check ──────────────────────────────────
-
-    private boolean scoreAndMaybeSemantic(ScrapedJob job, String source, Alert alert,
-                                           ResumeProfileResponse resumeProfile) {
+    private boolean scoreJob(ScrapedJob job, String source, Alert alert,
+                              ResumeProfileResponse resumeProfile,
+                              DeterministicJobExtractor.JobProfile jobProfile,
+                              List<String> userSkills) {
         String jobKey = source + "_" + job.getExternalJobId();
-        String userKey = alert.getUser().getId().toString();
 
-        // Skip if already rejected for this user
-        CacheEntry cached = jobCache.get(jobKey);
-        if (cached != null && "rejected".equals(cached.status())) {
-            return false;
-        }
+        // Skill matching (deterministic)
+        SkillMatcher.SkillMatchResult skillMatch = SkillMatcher.match(userSkills, job.getDescription());
 
-        // Skip if already exists in DB
-        Optional<Job> existingJob = jobService.getJobBySourceAndExternalId(source, job.getExternalJobId());
-        if (existingJob.isPresent()) {
-            return false;
-        }
-
-        // Get or create job profile
-        JobProfile jobProfile = jobProfileRepository
-                .findBySourceAndExternalJobId(source, job.getExternalJobId())
-                .orElse(null);
-
-        if (jobProfile == null) {
-            // Profile not extracted yet — extract now (shouldn't happen often)
-            log.warn("[{}] No cached profile for '{}' — extracting now", source, job.getTitle());
-            try {
-                JobExtractor.JobProfile extracted = jobExtractor.extract(job);
-                if (extracted == null) {
-                    log.warn("[{}] Extraction failed for '{}' — skipping", source, job.getTitle());
-                    return false;
-                }
-                // Save job first, then profile
-                Job savedJob = saveNewJob(job, source);
-                saveJobProfile(job, extracted, source);
-                jobProfile = jobProfileRepository
-                        .findBySourceAndExternalJobId(source, job.getExternalJobId())
-                        .orElse(null);
-            } catch (Exception e) {
-                log.error("[{}] Extraction failed for '{}': {}", source, job.getTitle(), e.getMessage());
-                return false;
-            }
-        }
-
-        if (jobProfile == null) {
-            return false;
-        }
-
-        // ── PHASE 4: Rule Engine Score (deterministic, <1ms) ──
-        if (resumeProfile == null || resumeProfile.getResumeText() == null || resumeProfile.getResumeText().isBlank()) {
-            log.info("[{}] No resume for user {} — defaulting to score 50", source, alert.getUser().getId());
-            return handleScoreResult(job, source, alert, 50, "no resume uploaded", List.of(), List.of());
-        }
-
+        // Build candidate profile from resume
         RuleEngine.CandidateProfile candidate = buildCandidateProfile(resumeProfile);
 
-        RuleEngine.JobProfile jobProfileForEngine = RuleEngine.JobProfile.builder()
-                .title(jobProfile.getTitle() != null ? jobProfile.getTitle() : job.getTitle())
-                .level(jobProfile.getLevel())
-                .workType(jobProfile.getWorkType())
-                .requiredSkills(jobProfile.getRequiredSkills() != null
-                        ? Arrays.asList(jobProfile.getRequiredSkills().split(",\\s*"))
-                        : List.of())
-                .bonusSkills(jobProfile.getBonusSkills() != null
-                        ? Arrays.asList(jobProfile.getBonusSkills().split(",\\s*"))
-                        : List.of())
-                .roleCategory(jobProfile.getRoleCategory())
-                .locationNormalized(jobProfile.getLocationNormalized())
+        // Build job profile for rule engine
+        RuleEngine.JobProfile ruleJob = RuleEngine.JobProfile.builder()
+                .title(jobProfile.title() != null ? jobProfile.title() : job.getTitle())
+                .level(jobProfile.level())
+                .workType(jobProfile.workType())
+                .requiredSkills(jobProfile.requiredSkills())
+                .bonusSkills(jobProfile.bonusSkills())
+                .roleCategory(jobProfile.roleCategory())
+                .locationNormalized(jobProfile.locationNormalized())
                 .location(job.getLocation())
                 .isRecruitingAgency(jobProfile.isRecruitingAgency())
                 .build();
@@ -438,49 +287,16 @@ public class ScraperOrchestrator {
                 .location(alert.getLocation())
                 .build();
 
-        RuleEngine.ScoreResult ruleResult = RuleEngine.score(candidate, jobProfileForEngine, alertData, 0);
+        // Score with description match (replaces aiSemantic)
+        RuleEngine.ScoreResult ruleResult = RuleEngine.score(candidate, ruleJob, alertData, skillMatch);
 
-        log.info("[{}] Phase 4 — RuleEngine score: {}/100 for '{}' — {}",
-                source, ruleResult.getScore(), job.getTitle(), ruleResult.getReason());
+        log.info("[{}] Score: {}/100 for '{}' — skills {}/{} matched — {}",
+                source, ruleResult.getScore(), job.getTitle(),
+                skillMatch.matchCount(), skillMatch.totalSkills(),
+                ruleResult.getReason());
 
-        // ── PHASE 5: Semantic Check (only for borderline: 50-85) ──
-        int finalScore = ruleResult.getScore();
-        String finalReason = ruleResult.getReason();
-        List<String> matchedSkills = ruleResult.getMatchedSkills();
-        List<String> missingSkills = ruleResult.getMissingSkills();
-
-        if (finalScore >= SEMANTIC_LOWER_THRESHOLD && finalScore <= SEMANTIC_UPPER_THRESHOLD) {
-            log.info("[{}] Phase 5 — Score {} is BORDERLINE ({}-{}) — running semantic check",
-                    source, finalScore, SEMANTIC_LOWER_THRESHOLD, SEMANTIC_UPPER_THRESHOLD);
-
-            try {
-                List<String> requiredSkills = jobProfile.getRequiredSkills() != null
-                        ? Arrays.asList(jobProfile.getRequiredSkills().split(",\\s*"))
-                        : List.of();
-
-                SemanticChecker.SemanticResult semanticResult = semanticChecker.checkWithProfile(
-                        candidate,
-                        jobProfile.getTitle() != null ? jobProfile.getTitle() : job.getTitle(),
-                        job.getCompany(),
-                        requiredSkills);
-
-                if (semanticResult != null) {
-                    // Blend semantic score into final: semantic adds 0-5 points
-                    finalScore = Math.min(100, finalScore + semanticResult.score());
-                    finalReason = finalReason + " + semantic: " + semanticResult.reason();
-                    log.info("[{}] Phase 5 — Semantic: {}/5 → adjusted score: {}/100",
-                            source, semanticResult.score(), finalScore);
-                }
-            } catch (Exception e) {
-                log.warn("[{}] Semantic check failed: {}", source, e.getMessage());
-            }
-        } else if (finalScore > SEMANTIC_UPPER_THRESHOLD) {
-            log.info("[{}] Phase 5 — Score {} > {} — ACCEPTED without semantic check", source, finalScore, SEMANTIC_UPPER_THRESHOLD);
-        } else {
-            log.info("[{}] Phase 5 — Score {} < {} — REJECTED without semantic check", source, finalScore, SEMANTIC_LOWER_THRESHOLD);
-        }
-
-        return handleScoreResult(job, source, alert, finalScore, finalReason, matchedSkills, missingSkills);
+        return handleScoreResult(job, source, alert, ruleResult.getScore(),
+                ruleResult.getReason(), ruleResult.getMatchedSkills(), ruleResult.getMissingSkills());
     }
 
     private boolean handleScoreResult(ScrapedJob job, String source, Alert alert,
@@ -489,42 +305,30 @@ public class ScraperOrchestrator {
         String jobKey = source + "_" + job.getExternalJobId();
         String userKey = alert.getUser().getId().toString();
 
-        if (score < AI_SCORE_THRESHOLD) {
-            jobCache.put(jobKey, new CacheEntry("rejected", System.currentTimeMillis()));
-            log.info("[{}] ❌ REJECTED (score {}/100): {} at {} — {}",
-                    source, score, job.getTitle(), job.getCompany(), reason);
-            return false;
-        }
-
-        log.info("[{}] ✅ ACCEPTED (score {}/100): {} — {}",
-                source, score, job.getTitle(), reason);
-
-        // Save job
+        // Save job to jobs table
         Job savedJob = saveNewJob(job, source);
 
-        // Mark as extracted if profile exists
-        if (jobProfileRepository.existsBySourceAndExternalJobId(source, job.getExternalJobId())) {
-            savedJob.setProfileExtracted(true);
-            jobService.saveJob(savedJob);
-        }
+        jobCache.put(jobKey, new CacheEntry(score >= SCORE_THRESHOLD ? "accepted" : "low_score", System.currentTimeMillis()));
 
-        jobCache.put(jobKey, new CacheEntry("accepted", System.currentTimeMillis()));
-
-        // Notify user
+        // Always create UserJob entry — score is a ranking signal
         Map<String, CacheEntry> userNotified = notifiedCache.computeIfAbsent(userKey, k -> new ConcurrentHashMap<>());
         if (!userNotified.containsKey(jobKey)) {
             userJobService.saveUserJob(alert.getUser(), savedJob, score);
-            log.info("[{}] 🔔 NOTIFIED user {} for '{}'", source, alert.getUser().getId(), job.getTitle());
 
-            try {
-                notificationService.notifyUser(
-                        alert.getUser().getId().toString(),
-                        "New Job: " + job.getTitle(),
-                        (job.getCompany() != null ? job.getCompany() : "Unknown") + " · " + (job.getLocation() != null ? job.getLocation() : ""),
-                        job.getJobUrl() != null ? job.getJobUrl() : ""
-                );
-            } catch (Exception e) {
-                log.error("[{}] Failed to send push notification to user {}: {}", source, alert.getUser().getId(), e.getMessage());
+            if (score >= SCORE_THRESHOLD) {
+                log.info("[{}] ✅ ACCEPTED (score {}/100): {} — {}", source, score, job.getTitle(), reason);
+                try {
+                    notificationService.notifyUser(
+                            alert.getUser().getId().toString(),
+                            "New Job: " + job.getTitle(),
+                            (job.getCompany() != null ? job.getCompany() : "Unknown") + " · " + (job.getLocation() != null ? job.getLocation() : ""),
+                            job.getJobUrl() != null ? job.getJobUrl() : ""
+                    );
+                } catch (Exception e) {
+                    log.error("[{}] Failed to send push notification to user {}: {}", source, alert.getUser().getId(), e.getMessage());
+                }
+            } else {
+                log.info("[{}] 📋 SAVED (score {}/100): {} — {}", source, score, job.getTitle(), reason);
             }
 
             userNotified.put(jobKey, new CacheEntry("notified", System.currentTimeMillis()));
@@ -534,6 +338,11 @@ public class ScraperOrchestrator {
     }
 
     private Job saveNewJob(ScrapedJob job, String source) {
+        Optional<Job> existing = jobService.getJobBySourceAndExternalId(source, job.getExternalJobId());
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+
         Job savedJob = new Job();
         savedJob.setSource(source);
         savedJob.setExternalJobId(job.getExternalJobId());
@@ -550,12 +359,12 @@ public class ScraperOrchestrator {
 
     private RuleEngine.CandidateProfile buildCandidateProfile(ResumeProfileResponse resumeProfile) {
         return RuleEngine.CandidateProfile.builder()
-                .level(resumeProfile.getLevel() != null ? resumeProfile.getLevel() : "mid")
-                .workPreference(resumeProfile.getWorkPreference() != null ? resumeProfile.getWorkPreference() : "any")
-                .preferredRoles(resumeProfile.getPreferredRoles() != null
+                .level(resumeProfile != null && resumeProfile.getLevel() != null ? resumeProfile.getLevel() : "mid")
+                .workPreference(resumeProfile != null && resumeProfile.getWorkPreference() != null ? resumeProfile.getWorkPreference() : "any")
+                .preferredRoles(resumeProfile != null && resumeProfile.getPreferredRoles() != null
                         ? Arrays.asList(resumeProfile.getPreferredRoles().split(",\\s*"))
                         : List.of())
-                .skills(resumeProfile.getSkills() != null
+                .skills(resumeProfile != null && resumeProfile.getSkills() != null
                         ? Arrays.asList(resumeProfile.getSkills().split(",\\s*"))
                         : List.of())
                 .tools(List.of())

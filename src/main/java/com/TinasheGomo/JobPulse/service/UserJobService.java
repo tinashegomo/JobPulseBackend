@@ -15,4 +15,5 @@ public interface UserJobService {
     void markUnseen(User user, UUID userJobId);
     void hide(User user, UUID userJobId);
     void deleteAllByUser(User user);
+    boolean userHasJob(UUID userId, String externalJobId, String source);
 }

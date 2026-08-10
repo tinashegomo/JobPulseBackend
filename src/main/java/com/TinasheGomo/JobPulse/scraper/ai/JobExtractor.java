@@ -170,7 +170,7 @@ public class JobExtractor {
             ScrapedJob job = jobs.get(i);
             String desc = (job.getDescription() != null ? job.getDescription() : "")
                     .replaceAll("<[^>]+>", " ");
-            if (desc.length() > 1500) desc = desc.substring(0, 1500);
+            if (desc.length() > 600) desc = desc.substring(0, 600);
 
             jobsSection.append(String.format("""
                     
@@ -189,36 +189,23 @@ public class JobExtractor {
         }
 
         String prompt = String.format("""
-                Extract structured information from these %d job postings. Be precise.
+                Extract structured info from %d job postings. Return ONLY raw JSON array.
 
                 %s
 
-                Return ONLY raw JSON (no markdown, no code fences) — an array of objects, one per job:
-                [
-                  {
-                    "jobIndex": 1,
-                    "title": "cleaned job title",
-                    "level": "entry|junior|mid|senior|lead|principal|manager",
-                    "workType": "remote|hybrid|onsite|unknown",
-                    "requiredSkills": ["Java", "Spring Boot"],
-                    "bonusSkills": ["Docker"],
-                    "roleCategory": "backend|frontend|fullstack|mobile|devops|data|design|other",
-                    "locationNormalized": "Remote|City, Country|Unknown",
-                    "isRecruitingAgency": false,
-                    "confidence": 0.85
-                  }
-                ]
+                Return array of objects:
+                [{"jobIndex":1,"title":"...","level":"entry|junior|mid|senior|lead|principal|manager","workType":"remote|hybrid|onsite|unknown","requiredSkills":["..."],"bonusSkills":["..."],"roleCategory":"backend|frontend|fullstack|mobile|devops|data|design|other","locationNormalized":"Remote|City, Country|Unknown","isRecruitingAgency":false,"confidence":0.85}]
 
                 Rules:
-                - Return exactly %d objects in the array
-                - jobIndex must match the Job # number (1-based)
-                - level: infer from title and description keywords
-                - workType: "remote" if explicitly remote, "hybrid" if mix, "onsite" if office, "unknown" if unclear
-                - requiredSkills: hard skills the job REQUIRES
-                - bonusSkills: nice-to-have skills
-                - roleCategory: best fit category
-                - isRecruitingAgency: true if posting is from a staffing agency
-                - confidence: how confident you are (0-1)""",
+                - Return exactly %d objects
+                - jobIndex = Job # number (1-based)
+                - level: infer from title/description (entry/junior=0-2yr, mid=3-5yr, senior=6+yr, lead/manager=people mgmt)
+                - workType: remote if explicitly remote, hybrid if mix, onsite if office, unknown if unclear
+                - requiredSkills: hard skills REQUIRED
+                - bonusSkills: nice-to-have
+                - roleCategory: best fit
+                - isRecruitingAgency: true if staffing agency
+                - confidence: 0-1""",
                 jobs.size(), jobsSection, jobs.size());
 
         log.info("[JobExtractor] Batch prompt size: {} chars for {} jobs, calling AI...", prompt.length(), jobs.size());

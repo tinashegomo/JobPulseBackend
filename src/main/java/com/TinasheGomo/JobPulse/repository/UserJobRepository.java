@@ -17,4 +17,5 @@ public interface UserJobRepository extends JpaRepository<UserJob, UUID> {
     List<UserJob> findByUserAndNotifiedAtIsNullOrderByScoreDesc(User user);
     Optional<UserJob> findByUserAndJob(User user, Job job);
     void deleteAllByUser(User user);
+    boolean existsByUserIdAndJobSourceAndJobExternalJobId(UUID userId, String source, String externalJobId);
 }

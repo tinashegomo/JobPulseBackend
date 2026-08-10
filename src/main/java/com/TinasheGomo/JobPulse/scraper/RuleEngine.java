@@ -81,7 +81,8 @@ public class RuleEngine {
 
     // ── Main scoring method ───────────────────────────────────────────────────
 
-    public static ScoreResult score(CandidateProfile candidate, JobProfile job, AlertData alert, int aiSemanticScore) {
+    public static ScoreResult score(CandidateProfile candidate, JobProfile job, AlertData alert,
+                                     SkillMatcher.SkillMatchResult skillMatch) {
         Map<String, Integer> breakdown = new HashMap<>();
         int total = 0;
 
@@ -100,7 +101,7 @@ public class RuleEngine {
         breakdown.put("seniority", sr);
         total += sr;
 
-        // D. Skill Match (20 points)
+        // D. Skill Match from profile (20 points)
         SkillMatchResult sk = skillMatchScore(candidate, job);
         breakdown.put("skillMatch", sk.getScore());
         total += sk.getScore();
@@ -110,10 +111,10 @@ public class RuleEngine {
         breakdown.put("location", loc);
         total += loc;
 
-        // F. AI Semantic (0-5 points)
-        int ai = Math.min(5, Math.max(0, aiSemanticScore));
-        breakdown.put("aiSemantic", ai);
-        total += ai;
+        // F. Description Skill Match (0-5 points) — replaces aiSemantic
+        int descMatch = descriptionMatchScore(skillMatch);
+        breakdown.put("descriptionMatch", descMatch);
+        total += descMatch;
 
         // Anti-bonus: recruiting agency penalty
         if (job.isRecruitingAgency()) {
@@ -125,7 +126,7 @@ public class RuleEngine {
         total = Math.max(0, Math.min(100, Math.round(total)));
 
         // Reason
-        String reason = buildReason(breakdown, candidate, job);
+        String reason = buildReason(breakdown, candidate, job, skillMatch);
 
         return ScoreResult.builder()
                 .score(total)
@@ -375,12 +376,14 @@ public class RuleEngine {
 
     // ── Reason builder ────────────────────────────────────────────────────────
 
-    private static String buildReason(Map<String, Integer> breakdown, CandidateProfile candidate, JobProfile job) {
+    private static String buildReason(Map<String, Integer> breakdown, CandidateProfile candidate,
+                                       JobProfile job, SkillMatcher.SkillMatchResult skillMatch) {
         List<String> parts = new ArrayList<>();
 
         int seniorityScore = breakdown.getOrDefault("seniority", 0);
         int workTypeScore = breakdown.getOrDefault("workType", 0);
         int skillMatchScore = breakdown.getOrDefault("skillMatch", 0);
+        int descMatchScore = breakdown.getOrDefault("descriptionMatch", 0);
         boolean hasAgencyPenalty = breakdown.containsKey("agencyPenalty");
 
         if (seniorityScore >= 15) {
@@ -401,10 +404,29 @@ public class RuleEngine {
             parts.add("missing key skills");
         }
 
+        if (skillMatch != null) {
+            parts.add(skillMatch.matchCount() + "/" + skillMatch.totalSkills() + " skills found");
+        }
+
         if (hasAgencyPenalty) {
             parts.add("recruiting agency");
         }
 
         return parts.isEmpty() ? "mixed signals" : String.join(", ", parts);
+    }
+
+    /**
+     * Description skill match score (0-5 points).
+     * Based on how many of the user's skills appear in the job description.
+     */
+    private static int descriptionMatchScore(SkillMatcher.SkillMatchResult skillMatch) {
+        if (skillMatch == null) return 0;
+        double pct = skillMatch.matchPercentage();
+        if (pct >= 80) return 5;
+        if (pct >= 60) return 4;
+        if (pct >= 40) return 3;
+        if (pct >= 20) return 2;
+        if (pct >= 10) return 1;
+        return 0;
     }
 }

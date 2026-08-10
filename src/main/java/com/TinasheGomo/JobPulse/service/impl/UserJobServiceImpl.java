@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -26,6 +27,13 @@ public class UserJobServiceImpl implements UserJobService {
 
     @Override
     public UserJobResponse saveUserJob(User user, Job job, Integer score) {
+        Optional<UserJob> existing = userJobRepository.findByUserAndJob(user, job);
+        if (existing.isPresent()) {
+            UserJob uj = existing.get();
+            uj.setScore(score);
+            userJobRepository.save(uj);
+            return userJobMapper.toResponse(uj);
+        }
         UserJob userJob = UserJob.builder()
                 .user(user)
                 .job(job)
@@ -81,5 +89,10 @@ public class UserJobServiceImpl implements UserJobService {
     public void deleteAllByUser(User user) {
         userJobRepository.deleteAllByUser(user);
         jobRepository.deleteOrphanedJobs();
+    }
+
+    @Override
+    public boolean userHasJob(UUID userId, String externalJobId, String source) {
+        return userJobRepository.existsByUserIdAndJobSourceAndJobExternalJobId(userId, source, externalJobId);
     }
 }

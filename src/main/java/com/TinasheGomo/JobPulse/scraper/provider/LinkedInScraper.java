@@ -34,16 +34,28 @@ public class LinkedInScraper implements JobScraper {
     private static final Pattern RELATIVE_TIME_PATTERN =
             Pattern.compile("(\\d+)\\s*(minute|min|m\\b|hour|hr|h\\b|day|d\\b|week|w\\b|month|mo|year|yr|y\\b)");
 
-    private static final Pattern CARD_PATTERN =
-            Pattern.compile(
-                    "<div[^>]*data-entity-urn=\"([^\"]+)\"[^>]*>.*?" +
-                    "<h3[^>]*class=\"[^\"]*base-search-card__title[^\"]*\"[^>]*>(.*?)</h3>.*?" +
-                    "<h4[^>]*class=\"[^\"]*base-search-card__subtitle[^\"]*\"[^>]*>(.*?)</h4>.*?" +
-                    "<span[^>]*class=\"[^\"]*job-search-card__location[^\"]*\"[^>]*>(.*?)</span>.*?" +
-                    "<a[^>]*class=\"[^\"]*base-card__full-link[^\"]*\"[^>]*href=\"([^\"]+)\"[^>]*>.*?" +
-                    "<time(?:(?:[^>]*datetime=\"([^\"]*?)\")?)[^>]*>(.*?)</time>",
-                    Pattern.DOTALL
-            );
+    // Split card pattern — finds each card's data-entity-urn boundary
+    private static final Pattern CARD_URN_PATTERN =
+            Pattern.compile("data-entity-urn=\"urn:li:jobPosting:(\\d+)\"");
+
+    // Individual field patterns (applied to each card block)
+    private static final Pattern TITLE_PATTERN =
+            Pattern.compile("<h3[^>]*class=\"[^\"]*base-search-card__title[^\"]*\"[^>]*>\\s*(.*?)\\s*</h3>", Pattern.DOTALL);
+
+    private static final Pattern COMPANY_PATTERN =
+            Pattern.compile("<h4[^>]*class=\"[^\"]*base-search-card__subtitle[^\"]*\"[^>]*>.*?<a[^>]*>(.*?)</a>", Pattern.DOTALL);
+
+    private static final Pattern LOCATION_PATTERN =
+            Pattern.compile("<span[^>]*class=\"[^\"]*job-search-card__location[^\"]*\"[^>]*>\\s*(.*?)\\s*</span>", Pattern.DOTALL);
+
+    private static final Pattern URL_PATTERN =
+            Pattern.compile("<a[^>]*class=\"[^\"]*base-card__full-link[^\"]*\"[^>]*href=\"([^\"]+)\"");
+
+    private static final Pattern DATETIME_PATTERN =
+            Pattern.compile("<time[^>]*datetime=\"([^\"]+)\"");
+
+    private static final Pattern POSTED_TEXT_PATTERN =
+            Pattern.compile("<time[^>]*>\\s*(.*?)\\s*</time>", Pattern.DOTALL);
 
     private final Map<String, String> searchCache = new ConcurrentHashMap<>();
 
@@ -217,24 +229,31 @@ public class LinkedInScraper implements JobScraper {
 
     private List<Map<String, String>> parseJobCards(String html) {
         List<Map<String, String>> jobs = new ArrayList<>();
-        Matcher matcher = CARD_PATTERN.matcher(html);
 
-        while (matcher.find()) {
-            String urn = matcher.group(1).trim();
-            String title = stripTags(matcher.group(2)).trim();
-            String company = stripTags(matcher.group(3)).trim();
-            String location = stripTags(matcher.group(4)).trim();
-            String jobUrl = matcher.group(5).trim();
-            String datetimeAttr = matcher.group(6) != null ? matcher.group(6).trim() : "";
-            String postedText = stripTags(matcher.group(7)).trim();
+        // Step 1: Find all card boundaries using data-entity-urn
+        List<int[]> cardBoundaries = new ArrayList<>();
+        Matcher urnMatcher = CARD_URN_PATTERN.matcher(html);
+        while (urnMatcher.find()) {
+            cardBoundaries.add(new int[]{urnMatcher.start(), urnMatcher.end()});
+        }
 
-            String externalJobId = "";
-            if (!urn.isEmpty()) {
-                String[] parts = urn.split(":");
-                externalJobId = parts[parts.length - 1];
-            }
+        // Step 2: Extract each card's HTML block (from one URN to the next)
+        for (int i = 0; i < cardBoundaries.size(); i++) {
+            int start = Math.max(0, cardBoundaries.get(i)[0] - 500); // Go back 500 chars to catch the opening div
+            int end = (i + 1 < cardBoundaries.size())
+                    ? cardBoundaries.get(i + 1)[0]
+                    : Math.min(html.length(), cardBoundaries.get(i)[0] + 3000); // Card is usually < 3KB
+            String cardHtml = html.substring(start, end);
 
-            if (!externalJobId.isEmpty() && !title.isEmpty()) {
+            String externalJobId = extractField(CARD_URN_PATTERN, cardHtml);
+            String title = stripTags(extractField(TITLE_PATTERN, cardHtml)).trim();
+            String company = stripTags(extractField(COMPANY_PATTERN, cardHtml)).trim();
+            String location = stripTags(extractField(LOCATION_PATTERN, cardHtml)).trim();
+            String jobUrl = extractField(URL_PATTERN, cardHtml);
+            String datetimeAttr = extractField(DATETIME_PATTERN, cardHtml);
+            String postedText = stripTags(extractField(POSTED_TEXT_PATTERN, cardHtml)).trim();
+
+            if (externalJobId != null && !externalJobId.isEmpty() && !title.isEmpty()) {
                 Map<String, String> jobData = new HashMap<>();
                 jobData.put("externalJobId", externalJobId);
                 jobData.put("title", title);
@@ -242,12 +261,17 @@ public class LinkedInScraper implements JobScraper {
                 jobData.put("location", location);
                 jobData.put("jobUrl", jobUrl);
                 jobData.put("postedText", postedText);
-                jobData.put("datetimeAttr", datetimeAttr);
+                jobData.put("datetimeAttr", datetimeAttr != null ? datetimeAttr : "");
                 jobs.add(jobData);
             }
         }
 
         return jobs;
+    }
+
+    private String extractField(Pattern pattern, String html) {
+        Matcher m = pattern.matcher(html);
+        return m.find() ? m.group(1) : null;
     }
 
     private String stripTags(String html) {
