@@ -42,9 +42,6 @@ public class Job {
     @Column(name = "posted_at")
     private LocalDateTime postedAt;
 
-    @Column(name = "profile_extracted", nullable = false)
-    private boolean profileExtracted = false;
-
     @Column(name = "created_at", nullable = false, updatable = false)
     @Setter(AccessLevel.NONE)
     private LocalDateTime createdAt;

@@ -1,7 +1,6 @@
 package com.TinasheGomo.JobPulse.dto.auth;
 
 import com.TinasheGomo.JobPulse.dto.alert.AlertResponse;
-import com.TinasheGomo.JobPulse.dto.resumeprofile.ResumeProfileResponse;
 import com.TinasheGomo.JobPulse.entity.User;
 import lombok.*;
 
@@ -19,7 +18,6 @@ public class AuthResponse {
     private String fullName;
     private Boolean emailVerified;
     private List<AlertResponse> alerts;
-    private ResumeProfileResponse resumeProfile;
 
     public static AuthResponse from(User user, String token) {
         return AuthResponse.builder()

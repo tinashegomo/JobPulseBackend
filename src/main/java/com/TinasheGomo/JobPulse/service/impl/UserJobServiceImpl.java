@@ -88,7 +88,6 @@ public class UserJobServiceImpl implements UserJobService {
     @Transactional
     public void deleteAllByUser(User user) {
         userJobRepository.deleteAllByUser(user);
-        jobRepository.deleteOrphanedJobs();
     }
 
     @Override
