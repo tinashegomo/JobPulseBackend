@@ -110,8 +110,8 @@ public class ScraperOrchestrator {
                         userJobService.saveUserJob(alert.getUser(), savedJob, score);
 
                         if (score >= SCORE_THRESHOLD) {
-                            log.info("[{}] ✅ {}/100: '{}' at '{}' — {}",
-                                    source, score, job.getTitle(), job.getCompany(), job.getLocation());
+                            log.info("[{}] ✅ {}/100: '{}' at '{}' — {} | posted: {}",
+                                    source, score, job.getTitle(), job.getCompany(), job.getLocation(), job.getPostedAt());
                             try {
                                 notificationService.notifyUser(
                                         alert.getUser().getId().toString(),
@@ -184,9 +184,16 @@ public class ScraperOrchestrator {
     }
 
     private boolean isWithinAgeWindow(ScrapedJob job) {
-        if (job.getPostedAt() == null) return false;
+        if (job.getPostedAt() == null) {
+            log.debug("Rejected: no postedAt — '{}'", job.getTitle());
+            return false;
+        }
         long hours = Duration.between(job.getPostedAt(), LocalDateTime.now()).toHours();
-        return hours <= MAX_JOB_AGE_HOURS;
+        if (hours > MAX_JOB_AGE_HOURS) {
+            log.debug("Rejected: {}h old (max {}h) — '{}'", hours, MAX_JOB_AGE_HOURS, job.getTitle());
+            return false;
+        }
+        return true;
     }
 
     private boolean isAlreadyRejected(ScrapedJob job, String source) {
