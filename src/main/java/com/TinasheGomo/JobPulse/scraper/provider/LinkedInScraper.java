@@ -40,10 +40,10 @@ public class LinkedInScraper implements JobScraper {
 
     // Individual field patterns (applied to each card block)
     private static final Pattern TITLE_PATTERN =
-            Pattern.compile("<h3[^>]*class=\"[^\"]*base-search-card__title[^\"]*\"[^>]*>\\s*(.*?)\\s*</h3>", Pattern.DOTALL);
+            Pattern.compile("<h3[^>]*class=\"[^\"]*base-search-card__title[^\"]*\"[^>]*>(.*?)</h3>", Pattern.DOTALL);
 
     private static final Pattern COMPANY_PATTERN =
-            Pattern.compile("<h4[^>]*class=\"[^\"]*base-search-card__subtitle[^\"]*\"[^>]*>.*?<a[^>]*>(.*?)</a>", Pattern.DOTALL);
+            Pattern.compile("<a[^>]*class=\"[^\"]*hidden-nested-link[^\"]*\"[^>]*>\\s*(.*?)\\s*</a>", Pattern.DOTALL);
 
     private static final Pattern LOCATION_PATTERN =
             Pattern.compile("<span[^>]*class=\"[^\"]*job-search-card__location[^\"]*\"[^>]*>\\s*(.*?)\\s*</span>", Pattern.DOTALL);
@@ -253,7 +253,11 @@ public class LinkedInScraper implements JobScraper {
             String datetimeAttr = extractField(DATETIME_PATTERN, cardHtml);
             String postedText = stripTags(extractField(POSTED_TEXT_PATTERN, cardHtml)).trim();
 
-            if (externalJobId != null && !externalJobId.isEmpty() && !title.isEmpty()) {
+            if (externalJobId != null && !externalJobId.isEmpty()) {
+                if (title.isEmpty()) {
+                    log.info("[LinkedIn] ⚠ Empty title for card #{} — snippet: {}",
+                            i + 1, cardHtml.substring(0, Math.min(300, cardHtml.length())).replace("\n", " ").replace("\r", ""));
+                }
                 Map<String, String> jobData = new HashMap<>();
                 jobData.put("externalJobId", externalJobId);
                 jobData.put("title", title);

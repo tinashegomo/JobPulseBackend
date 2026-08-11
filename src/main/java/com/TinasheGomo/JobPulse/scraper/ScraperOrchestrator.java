@@ -185,12 +185,12 @@ public class ScraperOrchestrator {
 
     private boolean isWithinAgeWindow(ScrapedJob job) {
         if (job.getPostedAt() == null) {
-            log.debug("Rejected: no postedAt — '{}'", job.getTitle());
+            log.info("Rejected: no postedAt — '{}'", job.getTitle());
             return false;
         }
         long hours = Duration.between(job.getPostedAt(), LocalDateTime.now()).toHours();
         if (hours > MAX_JOB_AGE_HOURS) {
-            log.debug("Rejected: {}h old (max {}h) — '{}'", hours, MAX_JOB_AGE_HOURS, job.getTitle());
+            log.info("Rejected: {}h old (max {}h) — '{}'", hours, MAX_JOB_AGE_HOURS, job.getTitle());
             return false;
         }
         return true;
