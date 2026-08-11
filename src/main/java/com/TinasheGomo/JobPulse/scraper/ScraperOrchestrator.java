@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class ScraperOrchestrator {
 
-    private static final int MAX_JOB_AGE_HOURS = 15;
+    private static final int MAX_JOB_AGE_HOURS = 10;
     private static final int SCORE_THRESHOLD = 50;
 
     private static final Set<String> STOPWORDS = Set.of(
