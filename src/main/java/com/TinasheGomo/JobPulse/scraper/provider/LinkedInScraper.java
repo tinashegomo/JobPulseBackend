@@ -239,13 +239,17 @@ public class LinkedInScraper implements JobScraper {
 
         // Step 2: Extract each card's HTML block (from one URN to the next)
         for (int i = 0; i < cardBoundaries.size(); i++) {
-            int start = Math.max(0, cardBoundaries.get(i)[0] - 500); // Go back 500 chars to catch the opening div
+            int start = Math.max(0, cardBoundaries.get(i)[0] - 800); // Go back further to catch opening div
             int end = (i + 1 < cardBoundaries.size())
                     ? cardBoundaries.get(i + 1)[0]
-                    : Math.min(html.length(), cardBoundaries.get(i)[0] + 3000); // Card is usually < 3KB
+                    : Math.min(html.length(), cardBoundaries.get(i)[0] + 4000); // Card is usually < 4KB
             String cardHtml = html.substring(start, end);
 
-            String externalJobId = extractField(CARD_URN_PATTERN, cardHtml);
+            // Extract externalJobId directly from the known URN position in full HTML
+            String urnText = html.substring(cardBoundaries.get(i)[0], cardBoundaries.get(i)[1]);
+            Matcher idMatcher = Pattern.compile("urn:li:jobPosting:(\\d+)").matcher(urnText);
+            String externalJobId = idMatcher.find() ? idMatcher.group(1) : null;
+
             String title = stripTags(extractField(TITLE_PATTERN, cardHtml)).trim();
             String company = stripTags(extractField(COMPANY_PATTERN, cardHtml)).trim();
             String location = stripTags(extractField(LOCATION_PATTERN, cardHtml)).trim();
@@ -253,11 +257,16 @@ public class LinkedInScraper implements JobScraper {
             String datetimeAttr = extractField(DATETIME_PATTERN, cardHtml);
             String postedText = stripTags(extractField(POSTED_TEXT_PATTERN, cardHtml)).trim();
 
-            if (externalJobId != null && !externalJobId.isEmpty()) {
-                if (title.isEmpty()) {
-                    log.info("[LinkedIn] ⚠ Empty title for card #{} — snippet: {}",
-                            i + 1, cardHtml.substring(0, Math.min(300, cardHtml.length())).replace("\n", " ").replace("\r", ""));
-                }
+            // Log first 3 cards unconditionally for diagnostics
+            if (i < 3) {
+                String snippet = cardHtml.substring(0, Math.min(500, cardHtml.length()))
+                        .replace("\n", " ").replace("\r", "");
+                log.info("[LinkedIn] DIAG card#{} id={} title='{}' company='{}' location='{}' url={} | snippet: {}",
+                        i + 1, externalJobId, title, company, location,
+                        jobUrl != null ? "yes" : "no", snippet);
+            }
+
+            if (externalJobId != null && !externalJobId.isEmpty() && !title.isEmpty()) {
                 Map<String, String> jobData = new HashMap<>();
                 jobData.put("externalJobId", externalJobId);
                 jobData.put("title", title);
