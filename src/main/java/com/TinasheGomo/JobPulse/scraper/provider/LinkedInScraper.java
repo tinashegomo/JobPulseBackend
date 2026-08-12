@@ -108,7 +108,7 @@ public class LinkedInScraper implements JobScraper {
                 if (postedAt != null) {
                     long hours = java.time.Duration.between(postedAt, LocalDateTime.now()).toHours();
                     if (hours > 15) {
-                        log.debug("[LinkedIn] Skipping old job ({}h ago): {}", hours, card.get("title"));
+                        log.info("[LinkedIn] ⏩ Skip old ({}h): '{}'", hours, card.get("title"));
                         continue;
                     }
                 }
@@ -169,6 +169,7 @@ public class LinkedInScraper implements JobScraper {
         if (location != null && !location.isBlank()) {
             url.append("&location=").append(location.replace(" ", "%20"));
         }
+        url.append("&sortBy=DD");
         return url.toString();
     }
 
@@ -239,12 +240,15 @@ public class LinkedInScraper implements JobScraper {
 
         int withId = 0, withTitle = 0, added = 0;
 
-        // Step 2: Extract each card's HTML block (from one URN to the next)
+        // Step 2: Extract each card's HTML block (from current card's URN to next card's URN)
+        // All fields (title, company, location, url, time) appear AFTER the URN in LinkedIn HTML.
+        // Do NOT look back before the URN — that includes the previous card's <time> element,
+        // causing POSTED_TEXT_PATTERN to match the wrong card's date.
         for (int i = 0; i < cardBoundaries.size(); i++) {
-            int start = Math.max(0, cardBoundaries.get(i)[0] - 800);
+            int start = cardBoundaries.get(i)[0];
             int end = (i + 1 < cardBoundaries.size())
                     ? cardBoundaries.get(i + 1)[0]
-                    : Math.min(html.length(), cardBoundaries.get(i)[0] + 4000);
+                    : Math.min(html.length(), cardBoundaries.get(i)[0] + 5000);
             String cardHtml = html.substring(start, end);
 
             // Extract externalJobId directly from the known URN position in full HTML
