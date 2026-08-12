@@ -237,12 +237,14 @@ public class LinkedInScraper implements JobScraper {
             cardBoundaries.add(new int[]{urnMatcher.start(), urnMatcher.end()});
         }
 
+        int withId = 0, withTitle = 0, added = 0;
+
         // Step 2: Extract each card's HTML block (from one URN to the next)
         for (int i = 0; i < cardBoundaries.size(); i++) {
-            int start = Math.max(0, cardBoundaries.get(i)[0] - 800); // Go back further to catch opening div
+            int start = Math.max(0, cardBoundaries.get(i)[0] - 800);
             int end = (i + 1 < cardBoundaries.size())
                     ? cardBoundaries.get(i + 1)[0]
-                    : Math.min(html.length(), cardBoundaries.get(i)[0] + 4000); // Card is usually < 4KB
+                    : Math.min(html.length(), cardBoundaries.get(i)[0] + 4000);
             String cardHtml = html.substring(start, end);
 
             // Extract externalJobId directly from the known URN position in full HTML
@@ -257,14 +259,16 @@ public class LinkedInScraper implements JobScraper {
             String datetimeAttr = extractField(DATETIME_PATTERN, cardHtml);
             String postedText = stripTags(extractField(POSTED_TEXT_PATTERN, cardHtml)).trim();
 
-            // Log first 3 cards unconditionally for diagnostics
-            if (i < 3) {
-                String snippet = cardHtml.substring(0, Math.min(500, cardHtml.length()))
-                        .replace("\n", " ").replace("\r", "");
-                log.info("[LinkedIn] DIAG card#{} id={} title='{}' company='{}' location='{}' url={} | snippet: {}",
-                        i + 1, externalJobId, title, company, location,
-                        jobUrl != null ? "yes" : "no", snippet);
-            }
+            if (externalJobId != null && !externalJobId.isEmpty()) withId++;
+            if (!title.isEmpty()) withTitle++;
+
+            // Compact log for every card
+            log.info("[LinkedIn] CARD #{} id={} title='{}' company='{}' url={}",
+                    i + 1,
+                    externalJobId != null ? externalJobId : "NULL",
+                    title.length() > 40 ? title.substring(0, 40) + "..." : title,
+                    company,
+                    jobUrl != null ? "Y" : "N");
 
             if (externalJobId != null && !externalJobId.isEmpty() && !title.isEmpty()) {
                 Map<String, String> jobData = new HashMap<>();
@@ -276,8 +280,12 @@ public class LinkedInScraper implements JobScraper {
                 jobData.put("postedText", postedText);
                 jobData.put("datetimeAttr", datetimeAttr != null ? datetimeAttr : "");
                 jobs.add(jobData);
+                added++;
             }
         }
+
+        log.info("[LinkedIn] PARSE SUMMARY: {} total cards, {} with id, {} with title, {} added",
+                cardBoundaries.size(), withId, withTitle, added);
 
         return jobs;
     }
